@@ -52,6 +52,9 @@ function updateDisplay(status, currentRoundNum, time) {
 }
 
 function startTimer() {
+
+    warningBell.play();
+
     if (!isRunning) {
         isRunning = true;
         startButton.textContent = "Resume";
