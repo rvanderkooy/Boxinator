@@ -2,6 +2,7 @@
 const timeDisplay = document.getElementById('time');
 const statusDisplay = document.getElementById('status');
 const roundDisplay = document.getElementById('round');
+const unlockSoundsButton = document.getElementById("unlockSoundsButton");
 const startButton = document.getElementById('startButton');
 const pauseButton = document.getElementById('pauseButton');
 const resetButton = document.getElementById('resetButton');
@@ -51,10 +52,13 @@ function updateDisplay(status, currentRoundNum, time) {
     roundDisplay.textContent = `Round ${currentRoundNum} / ${totalRounds}`;
 }
 
-function startTimer() {
-
+function unlockSounds() {
+    startRoundBell.play();
     warningBell.play();
+    endRoundBell.play();
+}
 
+function startTimer() {    
     if (!isRunning) {
         isRunning = true;
         startButton.textContent = "Resume";
@@ -145,6 +149,7 @@ function countdown() {
 }
 
 // Event Listeners
+unlockSoundsButton.addEventListener('click', unlockSounds);
 startButton.addEventListener('click', startTimer);
 pauseButton.addEventListener('click', pauseTimer);
 resetButton.addEventListener('click', resetTimer);
