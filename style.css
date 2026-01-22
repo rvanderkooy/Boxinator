@@ -1,0 +1,85 @@
+/* Placeholder for styling */
+body {
+    font-family: Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    background-color: #282c34;
+    color: #fff;
+    margin: 0;
+}
+
+.container {
+    background-color: #3a3f4a;
+    padding: 30px;
+    border-radius: 10px;
+    box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+    text-align: center;
+}
+
+h1 {
+    color: #61dafb;
+}
+
+.timer-display {
+    margin: 20px 0;
+}
+
+#status {
+    font-size: 2em;
+    margin-bottom: 10px;
+}
+
+#time {
+    font-size: 4em;
+    font-weight: bold;
+}
+
+#round {
+    font-size: 1.2em;
+    margin-top: 5px;
+}
+
+.controls {
+    margin-top: 30px;
+}
+
+.setting {
+    margin-bottom: 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.setting label {
+    margin-right: 10px;
+}
+
+.setting select, .setting input[type="checkbox"] {
+    padding: 8px;
+    border-radius: 5px;
+    border: none;
+    background-color: #4a4f59;
+    color: #fff;
+}
+
+.checkbox {
+    justify-content: center;
+}
+
+.action-buttons button {
+    background-color: #61dafb;
+    color: #282c34;
+    border: none;
+    padding: 10px 20px;
+    margin: 0 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 1em;
+    transition: background-color 0.3s ease;
+}
+
+.action-buttons button:hover {
+    background-color: #21a1f1;
+}
