@@ -1,0 +1,523 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Thud Counter (Mic Listener)</title>
+    <style>
+        :root {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        }
+
+        body {
+            margin: 24px;
+            max-width: 900px;
+        }
+
+        h1 {
+            margin: 0 0 8px;
+        }
+
+        .row {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        button {
+            padding: 10px 14px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 16px;
+            box-shadow: 0 1px 8px rgba(0,0,0,0.06);
+        }
+
+        .stat {
+            font-size: 40px;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .muted {
+            color: #555;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        input[type="range"] {
+            width: 320px;
+            max-width: 90vw;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        @media (max-width: 720px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .meterWrap {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .meter {
+            width: 420px;
+            max-width: 90vw;
+            height: 14px;
+            border-radius: 999px;
+            background: #eee;
+            overflow: hidden;
+            border: 1px solid #ddd;
+        }
+
+        .bar {
+            height: 100%;
+            width: 0%;
+            background: #2b7;
+            transition: width 60ms linear;
+        }
+
+        .pill {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 999px;
+            background: #f3f3f3;
+            border: 1px solid #ddd;
+        }
+
+        #log {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Thud Counter</h1>
+    <div class="muted">
+        Click <b>Start</b>, allow microphone access, then it will detect sudden “thud” impacts (tunable).
+    </div>
+
+    <div class="row" style="margin-top:12px;">
+        <button id="btnUnlockSounds">Unlock Sounds</button>
+        <button id="btnStart">Start</button>
+        <button id="btnStop" disabled>Stop</button>
+        <button id="btnReset" disabled>Reset Count</button>
+        <span class="pill" id="status">Idle</span>
+    </div>
+
+    <div class="card grid">
+        <div>
+            <div class="muted">Thuds detected</div>
+            <div class="stat" id="count">0</div>
+
+            <div style="margin-top:14px;" class="meterWrap">
+                <div class="meter"><div class="bar" id="bar"></div></div>
+                <span class="pill" id="levelText">level: 0.000</span>
+            </div>
+
+            <div class="muted" style="margin-top:10px;">
+                Detection uses: (1) sudden volume increase, (2) low-frequency energy, (3) cooldown to avoid double counts.
+            </div>
+        </div>
+
+        <div>
+            <div class="muted" style="margin-bottom:8px;">Tuning</div>
+
+            <label>
+                Sensitivity (Volume Spike Threshold): <span id="thrVal"></span>
+            </label>
+            <input id="thr" type="range" min="0.01" max="0.40" step="0.005" value="0.10" />
+
+            <label>
+                Low-Freq Bias (0 = off, 1 = strict thud): <span id="lfVal"></span>
+            </label>
+            <input id="lf" type="range" min="0" max="1" step="0.05" value="0.55" />
+
+            <label>
+                Cooldown (ms, prevents double counting): <span id="cdVal"></span>
+            </label>
+            <input id="cd" type="range" min="100" max="2000" step="50" value="450" />
+
+            <label>
+                Noise Floor Adaptation (higher = adapts faster): <span id="nfVal"></span>
+            </label>
+            <input id="nf" type="range" min="0.001" max="0.08" step="0.001" value="0.010" />
+
+            <div class="muted" style="margin-top:10px;">
+                Tip: If it misses thuds, lower threshold a bit. If it false-triggers, raise threshold and/or increase low-freq bias.
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="row" style="justify-content: space-between;">
+            <div class="muted">Event log (latest first)</div>
+            <button id="btnClearLog" disabled>Clear Log</button>
+        </div>
+        <div id="log" style="margin-top:10px;"></div>
+    </div>
+
+    <script>
+        // ---- UI ----
+        const $ = (id) => document.getElementById(id);
+
+        const btnUnlockSounds = $("btnUnlockSounds");
+        const btnStart = $("btnStart");
+        const btnStop = $("btnStop");
+        const btnReset = $("btnReset");
+        const btnClearLog = $("btnClearLog");
+
+        const statusEl = $("status");
+        const countEl = $("count");
+        const barEl = $("bar");
+        const levelTextEl = $("levelText");
+        const logEl = $("log");
+
+        const thr = $("thr"), lf = $("lf"), cd = $("cd"), nf = $("nf");
+        const thrVal = $("thrVal"), lfVal = $("lfVal"), cdVal = $("cdVal"), nfVal = $("nfVal");
+
+        function syncLabels() {
+            thrVal.textContent = Number(thr.value).toFixed(3);
+            lfVal.textContent = Number(lf.value).toFixed(2);
+            cdVal.textContent = `${Number(cd.value).toFixed(0)}`;
+            nfVal.textContent = Number(nf.value).toFixed(3);
+        }
+        [thr, lf, cd, nf].forEach(el => el.addEventListener("input", syncLabels));
+        syncLabels();
+
+        function setStatus(text) { statusEl.textContent = text; }
+
+        function addLog(line) {
+            const now = new Date();
+            const ts = now.toLocaleTimeString();
+            const current = logEl.textContent.trim();
+            const next = `[${ts}] ${line}\n` + (current ? current + "\n" : "");
+            logEl.textContent = next.split("\n").slice(0, 40).join("\n"); // keep last ~40 lines
+        }
+
+        // ---- Audio detection ----
+        let audioCtx = null;
+        let stream = null;
+        let source = null;
+        let analyser = null;
+        let filterLow = null;
+
+        let rafId = null;
+        let thudCount = 0;
+
+        // Adaptive noise floor / baseline level
+        let baseline = 0.02; // starting guess
+        let lastLevel = 0;
+        let lastThudAt = 0;
+
+        // ---- Low-latency explosion sound (Web Audio) ----
+        // We decode once, then schedule playback immediately on thud.
+        let explosionBuffer = null;
+        let explosionGain = null;
+        let explosionFetchPromise = null;
+
+        // optional: small pool so rapid hits don't cut each other off
+        const EXPLOSION_VOICES = 4;
+        let voiceIndex = 0;
+        let voicePool = [];
+
+        async function loadExplosionBuffer() {
+            if (!audioCtx) throw new Error("audioCtx not initialized yet");
+
+            if (explosionBuffer) return explosionBuffer;
+            if (explosionFetchPromise) return explosionFetchPromise;
+
+            explosionFetchPromise = (async () => {
+                const res = await fetch("assets/explosion4.mp3", { cache: "force-cache" });
+                const arr = await res.arrayBuffer();
+                explosionBuffer = await audioCtx.decodeAudioData(arr);
+
+                explosionGain = audioCtx.createGain();
+                explosionGain.gain.value = 1.0;
+                explosionGain.connect(audioCtx.destination);
+
+                voicePool = new Array(EXPLOSION_VOICES).fill(null);
+
+                return explosionBuffer;
+            })();
+
+            return explosionFetchPromise;
+        }
+
+        function playExplosionNow() {
+            if (!audioCtx || !explosionBuffer || !explosionGain) return;
+
+            const src = audioCtx.createBufferSource();
+            src.buffer = explosionBuffer;
+
+            src.connect(explosionGain);
+            src.start(audioCtx.currentTime);
+
+            voicePool[voiceIndex] = src;
+            voiceIndex = (voiceIndex + 1) % EXPLOSION_VOICES;
+        }
+
+        // Helper: RMS (time-domain loudness)
+        function computeRms(timeData) {
+            let sum = 0;
+            for (let i = 0; i < timeData.length; i++) {
+                const v = (timeData[i] - 128) / 128; // convert 0-255 to approx -1..1
+                sum += v * v;
+            }
+            return Math.sqrt(sum / timeData.length);
+        }
+
+        // Helper: low-frequency energy ratio using FFT bins
+        // We'll compare energy in 20-160 Hz vs 20-1000 Hz.
+        function computeLowFreqRatio(freqData, sampleRate, fftSize) {
+            const nyquist = sampleRate / 2;
+            const binHz = nyquist / (freqData.length); // length = fftSize/2
+            const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+
+            const loStart = 20, loEnd = 160;
+            const hiEnd = 1000;
+
+            const loA = clamp(Math.floor(loStart / binHz), 0, freqData.length - 1);
+            const loB = clamp(Math.floor(loEnd / binHz), 0, freqData.length - 1);
+            const hiB = clamp(Math.floor(hiEnd / binHz), 0, freqData.length - 1);
+
+            let low = 0, total = 0;
+
+            // freqData values are 0..255 (log-ish magnitude); square to approximate energy-ish weighting
+            for (let i = loA; i <= hiB; i++) {
+                const mag = freqData[i] / 255;
+                const e = mag * mag;
+                total += e;
+                if (i >= loA && i <= loB) low += e;
+            }
+            return total > 0 ? (low / total) : 0;
+        }
+
+        function updateMeter(level) {
+            // map level to a nicer visual scale
+            const pct = Math.max(0, Math.min(100, (level / 0.35) * 100));
+            barEl.style.width = pct.toFixed(1) + "%";
+            levelTextEl.textContent = `level: ${level.toFixed(3)}  (base: ${baseline.toFixed(3)})`;
+        }
+
+        function detectLoop() {
+            if (!analyser) return;
+
+            const timeData = new Uint8Array(analyser.fftSize);
+            const freqData = new Uint8Array(analyser.frequencyBinCount);
+
+            analyser.getByteTimeDomainData(timeData);
+            analyser.getByteFrequencyData(freqData);
+
+            const level = computeRms(timeData);
+
+            // Adaptive baseline (noise floor) - Exponential moving average
+            const adapt = Number(nf.value);
+            baseline = (1 - adapt) * baseline + adapt * level;
+
+            // A "spike" is level exceeding baseline by a threshold amount
+            const spike = level - baseline;
+
+            // Low-frequency ratio (thuds tend to bias low)
+            const ratio = computeLowFreqRatio(freqData, audioCtx.sampleRate, analyser.fftSize);
+
+            // Conditions
+            const threshold = Number(thr.value);
+            const lowFreqBias = Number(lf.value);
+            const cooldownMs = Number(cd.value);
+
+            const now = performance.now();
+            const inCooldown = (now - lastThudAt) < cooldownMs;
+
+            // Extra "thud-ness": quick onset. If current level jumped vs last frame.
+            const onset = level - lastLevel;
+
+            // Combine logic:
+            //  - spike bigger than threshold
+            //  - onset reasonably sudden
+            //  - low-freq ratio passes a bias threshold that scales with lf slider
+            const onsetMin = 0.02 + (threshold * 0.15); // scale a bit with threshold
+            const ratioMin = 0.08 + (lowFreqBias * 0.22); // 0.08..0.30-ish
+
+            const isThud =
+                !inCooldown &&
+                spike > threshold &&
+                onset > onsetMin &&
+                ratio > ratioMin;
+
+            if (isThud) {
+                // Low-latency SFX (pre-decoded buffer)
+                playExplosionNow();
+
+                lastThudAt = now;
+                thudCount++;
+                countEl.textContent = String(thudCount);
+                addLog(`THUD #${thudCount}  spike=${spike.toFixed(3)} onset=${onset.toFixed(3)} lowRatio=${ratio.toFixed(2)}`);
+            }
+
+            updateMeter(level);
+
+            lastLevel = level;
+            rafId = requestAnimationFrame(detectLoop);
+        }
+
+        async function unlockSounds() {
+            try {
+                // Must be called from a user gesture (button click) for iOS/Safari.
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state !== "running") await audioCtx.resume();
+
+                // Preload & decode now to remove latency later
+                await loadExplosionBuffer();
+
+                // Prime output path with an inaudible tick
+                const tick = audioCtx.createBufferSource();
+                const buf = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+                tick.buffer = buf;
+                tick.connect(audioCtx.destination);
+                tick.start();
+
+                setStatus("Sounds unlocked");
+                addLog("Sounds unlocked + explosion preloaded.");
+            } catch (e) {
+                console.error(e);
+                addLog(`ERROR unlocking sounds: ${e?.message || e}`);
+            }
+        }
+
+        async function start() {
+            try {
+                setStatus("Requesting mic access…");
+
+                // Create/reuse audio context on user gesture
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state !== "running") await audioCtx.resume();
+
+                // If user hasn't clicked Unlock Sounds, we still try to preload here
+                // (still requires start button click which is a user gesture).
+                try { await loadExplosionBuffer(); } catch { /* ignore */ }
+
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        // For lowest input latency, consider turning these off.
+                        // Keeping your original values as requested (no restructuring).
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: false
+                    }
+                });
+
+                source = audioCtx.createMediaStreamSource(stream);
+
+                // Optional lowpass filter to emphasize thuds (keeps detection more stable)
+                filterLow = audioCtx.createBiquadFilter();
+                filterLow.type = "lowpass";
+                filterLow.frequency.value = 220; // Hz
+
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 2048;
+                analyser.smoothingTimeConstant = 0.15;
+
+                source.connect(filterLow);
+                filterLow.connect(analyser);
+
+                // Prime baseline
+                baseline = 0.02;
+                lastLevel = 0;
+                lastThudAt = 0;
+
+                setStatus("Listening");
+                addLog("Listening started.");
+
+                btnStart.disabled = true;
+                btnStop.disabled = false;
+                btnReset.disabled = false;
+                btnClearLog.disabled = false;
+
+                detectLoop();
+            } catch (err) {
+                console.error(err);
+                setStatus("Mic permission denied / error");
+                addLog(`ERROR: ${err?.message || err}`);
+                await stop();
+            }
+        }
+
+        async function stop() {
+            if (rafId) cancelAnimationFrame(rafId);
+            rafId = null;
+
+            if (analyser) { try { analyser.disconnect(); } catch { } }
+            if (filterLow) { try { filterLow.disconnect(); } catch { } }
+            if (source) { try { source.disconnect(); } catch { } }
+
+            analyser = null;
+            filterLow = null;
+            source = null;
+
+            if (stream) {
+                stream.getTracks().forEach(t => t.stop());
+                stream = null;
+            }
+
+            // IMPORTANT for low-latency SFX:
+            // Don't close the AudioContext (closing forces re-init + decode latency next start).
+            // We'll suspend it instead. Decoded buffers remain warm.
+            if (audioCtx) {
+                try { await audioCtx.suspend(); } catch { }
+            }
+
+            btnStart.disabled = false;
+            btnStop.disabled = true;
+            btnReset.disabled = false;
+            btnClearLog.disabled = false;
+
+            setStatus("Stopped");
+            addLog("Listening stopped.");
+            updateMeter(0);
+        }
+
+        function resetCount() {
+            thudCount = 0;
+            countEl.textContent = "0";
+            addLog("Count reset.");
+        }
+
+        function clearLog() {
+            logEl.textContent = "";
+        }
+
+        btnUnlockSounds.addEventListener("click", unlockSounds);
+        btnStart.addEventListener("click", start);
+        btnStop.addEventListener("click", stop);
+        btnReset.addEventListener("click", resetCount);
+        btnClearLog.addEventListener("click", clearLog);
+
+        // Safety: stop mic when tab is hidden
+        document.addEventListener("visibilitychange", () => {
+            if (document.hidden && !btnStart.disabled) return; // already stopped
+            if (document.hidden && btnStart.disabled) stop();
+        });
+    </script>
+</body>
+</html>
