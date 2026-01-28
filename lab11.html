@@ -1,0 +1,1254 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Thud Counter (Mic Listener)</title>
+    <style>
+        :root {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        }
+
+        body {
+            margin: 24px;
+            max-width: 900px;
+        }
+
+        h1 {
+            margin: 0 0 8px;
+        }
+
+        .row {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        button {
+            padding: 10px 14px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 16px;
+            box-shadow: 0 1px 8px rgba(0,0,0,0.06);
+        }
+
+        .stat {
+            font-size: 40px;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .muted {
+            color: #555;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        input[type="range"] {
+            width: 320px;
+            max-width: 90vw;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        @media (max-width: 720px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .meterWrap {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .meter {
+            width: 420px;
+            max-width: 90vw;
+            height: 14px;
+            border-radius: 999px;
+            background: #eee;
+            overflow: hidden;
+            border: 1px solid #ddd;
+        }
+
+        .bar {
+            height: 100%;
+            width: 0%;
+            background: #2b7;
+            transition: width 60ms linear;
+        }
+
+        .pill {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 999px;
+            background: #f3f3f3;
+            border: 1px solid #ddd;
+        }
+
+        #log {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Thud Counter</h1>
+    <div class="muted">
+        Click <b>Start</b>, allow microphone access, then it will detect sudden “thud” impacts (tunable).
+    </div>
+
+    <div class="row" style="margin-top:12px;">
+        <button id="btnUnlockSounds">Unlock Sounds</button>
+        <button id="btnStart">Start</button>
+        <button id="btnStop" disabled>Stop</button>
+        <button id="btnReset" disabled>Reset Count</button>
+        <span class="pill" id="status">Idle</span>
+    </div>
+
+    <div class="card grid">
+        <div>
+            <div class="muted">Thuds detected</div>
+            <div class="stat" id="count">0</div>
+
+            <div style="margin-top:14px;" class="meterWrap">
+                <div class="meter"><div class="bar" id="bar"></div></div>
+                <span class="pill" id="levelText">level: 0.000</span>
+            </div>
+
+            <div class="muted" style="margin-top:10px;">
+                Detection uses: (1) sudden volume increase, (2) low-frequency energy, (3) cooldown to avoid double counts.
+                <div style="margin-top:6px;">
+                    <b>Pro mode (iPhone Safari):</b> thud trigger runs in an <b>AudioWorklet</b> (or ScriptProcessor fallback)
+                    to catch the impact earlier than the UI/RAF loop.
+                </div>
+                <div style="margin-top:6px;">
+                    <b>Thud Freeze:</b> on trigger, we “hold” a tiny snippet of the real mic thud (low-passed) for a short time,
+                    while the explosion plays — to feel seamless.
+                </div>
+                <div style="margin-top:6px;">
+                    <b>Peak Alignment:</b> we schedule the explosion slightly into the future (Peak Align) and skip the soft start
+                    of the MP3 (Explosion Start Offset) so the “hit” lands right on the thud peak.
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <div class="muted" style="margin-bottom:8px;">Tuning</div>
+
+            <label>
+                Sensitivity (Volume Spike Threshold): <span id="thrVal"></span>
+            </label>
+            <input id="thr" type="range" min="0.01" max="0.40" step="0.005" value="0.10" />
+
+            <label>
+                Low-Freq Bias (0 = off, 1 = strict thud): <span id="lfVal"></span>
+            </label>
+            <input id="lf" type="range" min="0" max="1" step="0.05" value="0.55" />
+
+            <label>
+                Cooldown (ms, prevents double counting): <span id="cdVal"></span>
+            </label>
+            <input id="cd" type="range" min="100" max="2000" step="50" value="450" />
+
+            <label>
+                Noise Floor Adaptation (higher = adapts faster): <span id="nfVal"></span>
+            </label>
+            <input id="nf" type="range" min="0.001" max="0.08" step="0.001" value="0.010" />
+
+            <label>
+                3-Thud Combo Window (ms): <span id="comboVal"></span>
+            </label>
+            <input id="combo" type="range" min="200" max="2000" step="50" value="650" />
+
+            <label>
+                Thud Freeze Amount (0..100%): <span id="freezeAmtVal"></span>
+            </label>
+            <input id="freezeAmt" type="range" min="0" max="1" step="0.01" value="0.35" />
+
+            <label>
+                Thud Freeze Sustain (ms): <span id="freezeMsVal"></span>
+            </label>
+            <input id="freezeMs" type="range" min="0" max="800" step="10" value="220" />
+
+            <label>
+                Peak Align (ms): <span id="peakAlignVal"></span>
+            </label>
+            <input id="peakAlign" type="range" min="0" max="40" step="1" value="14" />
+
+            <label>
+                Explosion Start Offset (ms): <span id="expOffsetVal"></span>
+            </label>
+            <input id="expOffset" type="range" min="0" max="120" step="1" value="20" />
+
+            <label>
+                Keep Screen Awake (iOS): <span id="wakeVal"></span>
+            </label>
+            <input id="wake" type="range" min="0" max="1" step="1" value="1" />
+
+            <div class="muted" style="margin-top:10px;">
+                Tip: If it misses thuds, lower threshold a bit. If it false-triggers, raise threshold and/or increase low-freq bias.
+                <div style="margin-top:6px;">
+                    Combo tip: lower window = harder to trigger (must be faster). higher window = easier to trigger.
+                </div>
+                <div style="margin-top:6px;">
+                    Freeze tip: keep amount modest (10–45%) to avoid feedback. If you hear squeals, lower Freeze Amount.
+                </div>
+                <div style="margin-top:6px;">
+                    Peak Align tip: 8–22ms usually feels best. Explosion Start Offset depends on the MP3 (try 10–40ms).
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="row" style="justify-content: space-between;">
+            <div class="muted">Event log (latest first)</div>
+            <button id="btnClearLog" disabled>Clear Log</button>
+        </div>
+        <div id="log" style="margin-top:10px;"></div>
+    </div>
+
+    <script>
+        // ---- UI ----
+        const $ = (id) => document.getElementById(id);
+
+        const btnUnlockSounds = $("btnUnlockSounds");
+        const btnStart = $("btnStart");
+        const btnStop = $("btnStop");
+        const btnReset = $("btnReset");
+        const btnClearLog = $("btnClearLog");
+
+        const statusEl = $("status");
+        const countEl = $("count");
+        const barEl = $("bar");
+        const levelTextEl = $("levelText");
+        const logEl = $("log");
+
+        const thr = $("thr"), lf = $("lf"), cd = $("cd"), nf = $("nf"), combo = $("combo");
+        const freezeAmt = $("freezeAmt"), freezeMs = $("freezeMs");
+        const peakAlign = $("peakAlign"), expOffset = $("expOffset");
+        const wake = $("wake");
+
+        const thrVal = $("thrVal"), lfVal = $("lfVal"), cdVal = $("cdVal"), nfVal = $("nfVal");
+        const comboVal = $("comboVal"), freezeAmtVal = $("freezeAmtVal"), freezeMsVal = $("freezeMsVal"), wakeVal = $("wakeVal");
+        const peakAlignVal = $("peakAlignVal"), expOffsetVal = $("expOffsetVal");
+
+        function syncLabels() {
+            thrVal.textContent = Number(thr.value).toFixed(3);
+            lfVal.textContent = Number(lf.value).toFixed(2);
+            cdVal.textContent = `${Number(cd.value).toFixed(0)}`;
+            nfVal.textContent = Number(nf.value).toFixed(3);
+            comboVal.textContent = `${Number(combo.value).toFixed(0)}`;
+            freezeAmtVal.textContent = `${Math.round(Number(freezeAmt.value) * 100)}%`;
+            freezeMsVal.textContent = `${Number(freezeMs.value).toFixed(0)}`;
+            peakAlignVal.textContent = `${Number(peakAlign.value).toFixed(0)}`;
+            expOffsetVal.textContent = `${Number(expOffset.value).toFixed(0)}`;
+            wakeVal.textContent = Number(wake.value) === 1 ? "On" : "Off";
+        }
+        [thr, lf, cd, nf, combo, freezeAmt, freezeMs, peakAlign, expOffset, wake].forEach(el => el.addEventListener("input", syncLabels));
+        syncLabels();
+
+        function setStatus(text) { statusEl.textContent = text; }
+
+        function addLog(line) {
+            const now = new Date();
+            const ts = now.toLocaleTimeString();
+            const current = logEl.textContent.trim();
+            const next = `[${ts}] ${line}\n` + (current ? current + "\n" : "");
+            logEl.textContent = next.split("\n").slice(0, 100).join("\n");
+        }
+
+        // ---- Screen awake (Wake Lock + fallback) ----
+        let wakeLock = null;
+        let keepAwakeVideo = null;
+
+        async function enableKeepAwake() {
+            try {
+                if ("wakeLock" in navigator && navigator.wakeLock?.request) {
+                    wakeLock = await navigator.wakeLock.request("screen");
+                    addLog("Keep-awake: Wake Lock acquired.");
+                    wakeLock.addEventListener("release", () => {
+                        addLog("Keep-awake: Wake Lock released.");
+                        wakeLock = null;
+                    });
+                    return;
+                }
+            } catch (e) {
+                addLog(`Keep-awake: Wake Lock failed (${e?.message || e}). Trying fallback.`);
+            }
+
+            try {
+                if (!keepAwakeVideo) {
+                    keepAwakeVideo = document.createElement("video");
+                    keepAwakeVideo.setAttribute("playsinline", "");
+                    keepAwakeVideo.muted = true;
+                    keepAwakeVideo.loop = true;
+                    keepAwakeVideo.style.position = "fixed";
+                    keepAwakeVideo.style.width = "1px";
+                    keepAwakeVideo.style.height = "1px";
+                    keepAwakeVideo.style.opacity = "0";
+                    keepAwakeVideo.style.pointerEvents = "none";
+                    keepAwakeVideo.style.left = "-10px";
+                    keepAwakeVideo.style.top = "-10px";
+
+                    // Tiny mp4 data URI fallback. If this fails on a device, replace with a tiny mp4 in assets.
+                    keepAwakeVideo.src =
+                        "data:video/mp4;base64,AAAAHGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAGQbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAABR0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAEAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAx0a2hkAAAAAwAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAEAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAEbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAVcQAAAAAAAABAAAAAAHN0YmwAAABMc3RzZAAAAAAAAAABAAAAAQAAABxzdHNkAAAAAAAAAAEAAAAMYXZjMQAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAABAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+
+                    document.body.appendChild(keepAwakeVideo);
+                }
+
+                await keepAwakeVideo.play();
+                addLog("Keep-awake: Fallback video playing.");
+            } catch (e) {
+                addLog(`Keep-awake: Fallback failed (${e?.message || e}).`);
+            }
+        }
+
+        async function disableKeepAwake() {
+            try {
+                if (wakeLock) {
+                    await wakeLock.release();
+                    wakeLock = null;
+                }
+            } catch { }
+
+            try {
+                if (keepAwakeVideo) {
+                    keepAwakeVideo.pause();
+                }
+            } catch { }
+        }
+
+        async function applyKeepAwakeSetting() {
+            if (Number(wake.value) === 1) {
+                await enableKeepAwake();
+            } else {
+                await disableKeepAwake();
+                addLog("Keep-awake: Off.");
+            }
+        }
+
+        wake.addEventListener("input", () => {
+            if (!btnStart.disabled) return;
+            applyKeepAwakeSetting();
+        });
+
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden && Number(wake.value) === 1 && btnStart.disabled) {
+                applyKeepAwakeSetting();
+            }
+        });
+
+        // ---- Audio / Mic ----
+        let audioCtx = null;
+        let stream = null;
+        let source = null;
+
+        // Analyser: meter + optional confirm window
+        let analyser = null;
+        let filterLow = null;
+        let rafId = null;
+
+        let thudCount = 0;
+
+        // Meter baseline
+        let baseline = 0.02;
+        let lastLevel = 0;
+
+        // ---- Low-latency sound buffers (Web Audio) ----
+        let explosion3Buffer = null;
+        let explosion3Gain = null;
+        let explosion3FetchPromise = null;
+
+        let explosion5Buffer = null;
+        let explosion5Gain = null;
+        let explosion5FetchPromise = null;
+
+        const EXPLOSION3_VOICES = 6;
+        const EXPLOSION5_VOICES = 3;
+
+        let voice3Index = 0;
+        let voice5Index = 0;
+
+        let voice3Pool = [];
+        let voice5Pool = [];
+
+        async function loadBuffer(url) {
+            const res = await fetch(url, { cache: "force-cache" });
+            if (!res.ok) {
+                throw new Error(`Fetch failed (${res.status}) for ${new URL(url, location.href).href}`);
+            }
+            const arr = await res.arrayBuffer();
+            return await audioCtx.decodeAudioData(arr);
+        }
+
+        async function loadExplosion3() {
+            if (!audioCtx) throw new Error("audioCtx not initialized yet");
+            if (explosion3Buffer) return explosion3Buffer;
+            if (explosion3FetchPromise) return explosion3FetchPromise;
+
+            explosion3FetchPromise = (async () => {
+                explosion3Buffer = await loadBuffer("assets/explosion3.mp3");
+
+                explosion3Gain = audioCtx.createGain();
+                explosion3Gain.gain.value = 1.0;
+                explosion3Gain.connect(audioCtx.destination);
+
+                voice3Pool = new Array(EXPLOSION3_VOICES).fill(null);
+                return explosion3Buffer;
+            })();
+
+            return explosion3FetchPromise;
+        }
+
+        async function loadExplosion5() {
+            if (!audioCtx) throw new Error("audioCtx not initialized yet");
+            if (explosion5Buffer) return explosion5Buffer;
+            if (explosion5FetchPromise) return explosion5FetchPromise;
+
+            explosion5FetchPromise = (async () => {
+                explosion5Buffer = await loadBuffer("assets/explosion5.mp3");
+
+                explosion5Gain = audioCtx.createGain();
+                explosion5Gain.gain.value = 1.0;
+                explosion5Gain.connect(audioCtx.destination);
+
+                voice5Pool = new Array(EXPLOSION5_VOICES).fill(null);
+                return explosion5Buffer;
+            })();
+
+            return explosion5FetchPromise;
+        }
+
+        function getExplosion3StartOffsetSec() {
+            const ms = Number(expOffset.value) || 0;
+            if (!explosion3Buffer) return ms / 1000;
+            const max = Math.max(0, explosion3Buffer.duration - 0.01);
+            return Math.max(0, Math.min(ms / 1000, max));
+        }
+
+        function getExplosion5StartOffsetSec() {
+            const ms = Number(expOffset.value) || 0;
+            if (!explosion5Buffer) return ms / 1000;
+            const max = Math.max(0, explosion5Buffer.duration - 0.01);
+            return Math.max(0, Math.min(ms / 1000, max));
+        }
+
+        function playExplosion3Now({ when = null } = {}) {
+            if (!audioCtx || !explosion3Buffer || !explosion3Gain) return;
+
+            const src = audioCtx.createBufferSource();
+            src.buffer = explosion3Buffer;
+            src.connect(explosion3Gain);
+
+            const t = (when ?? audioCtx.currentTime);
+            const off = getExplosion3StartOffsetSec();
+
+            // Play full volume immediately (no "quietStart") for best perceived timing
+            explosion3Gain.gain.cancelScheduledValues(t);
+            explosion3Gain.gain.setValueAtTime(1.0, t);
+
+            src.start(t, off);
+
+            voice3Pool[voice3Index] = src;
+            voice3Index = (voice3Index + 1) % EXPLOSION3_VOICES;
+        }
+
+        function playExplosion5Now({ when = null } = {}) {
+            if (!audioCtx || !explosion5Buffer || !explosion5Gain) return;
+
+            const src = audioCtx.createBufferSource();
+            src.buffer = explosion5Buffer;
+            src.connect(explosion5Gain);
+
+            const t = (when ?? audioCtx.currentTime);
+            const off = getExplosion5StartOffsetSec();
+
+            explosion5Gain.gain.cancelScheduledValues(t);
+            explosion5Gain.gain.setValueAtTime(1.0, t);
+
+            src.start(t, off);
+
+            voice5Pool[voice5Index] = src;
+            voice5Index = (voice5Index + 1) % EXPLOSION5_VOICES;
+        }
+
+        function softenExplosion3Fast() {
+            if (!audioCtx || !explosion3Gain) return;
+            const t = audioCtx.currentTime;
+            explosion3Gain.gain.cancelScheduledValues(t);
+            explosion3Gain.gain.setValueAtTime(explosion3Gain.gain.value, t);
+            // quick fade down
+            explosion3Gain.gain.linearRampToValueAtTime(0.20, t + 0.03);
+        }
+
+        function restoreExplosion3Fast() {
+            if (!audioCtx || !explosion3Gain) return;
+            const t = audioCtx.currentTime;
+            explosion3Gain.gain.cancelScheduledValues(t);
+            explosion3Gain.gain.setValueAtTime(explosion3Gain.gain.value, t);
+            explosion3Gain.gain.linearRampToValueAtTime(1.0, t + 0.02);
+        }
+
+        // ---- 3-thud combo detector ----
+        let recentThudsMs = [];
+        let lastComboAtMs = 0;
+
+        function registerThudForCombo(nowMs) {
+            const windowMs = Number(combo.value);
+
+            recentThudsMs.push(nowMs);
+            recentThudsMs = recentThudsMs.filter(t => (nowMs - t) <= windowMs);
+
+            const comboGuardMs = Math.max(250, Math.floor(windowMs / 2));
+            const canCombo = (nowMs - lastComboAtMs) > comboGuardMs;
+
+            if (canCombo && recentThudsMs.length >= 3) {
+                lastComboAtMs = nowMs;
+                recentThudsMs = [];
+
+                const alignMs = Number(peakAlign.value) || 0;
+                const when = audioCtx ? (audioCtx.currentTime + (alignMs / 1000)) : null;
+
+                playExplosion5Now({ when });
+                addLog(`COMBO x3! Played explosion5 (window=${windowMs}ms, align=${alignMs}ms, offset=${Number(expOffset.value)}ms)`);
+            }
+        }
+
+        // ---- Thud Freeze + Detector ----
+        let thudNode = null;
+        let workletReady = false;
+
+        // Fallback ring buffer for freeze
+        let fbRing = null;
+        let fbRingWrite = 0;
+        let fbRingLen = 0;
+
+        let freezeBusGain = null;
+
+        // Worklet state
+        let pendingThud = false;
+        let confirmDeadlineMs = 0;
+
+        const CONFIRM_WINDOW_MS = 60;
+        const EARLY_COOLDOWN_MS = 250;
+        let lastEarlyAtMs = 0;
+
+        async function setupThudWorkletOrFallback() {
+            if (!audioCtx) throw new Error("audioCtx missing");
+
+            if (!freezeBusGain) {
+                freezeBusGain = audioCtx.createGain();
+                freezeBusGain.gain.value = 1.0;
+                freezeBusGain.connect(audioCtx.destination);
+            }
+
+            if (audioCtx.audioWorklet && !workletReady) {
+                const workletCode = `
+class ThudDetector extends AudioWorkletProcessor {
+      constructor() {
+        super();
+
+        // detection params
+        this.base = 0.02;
+        this.lastEnv = 0;
+        this.lp = 0;
+
+        this.thr = 0.10;
+        this.lfBias = 0.55;
+        this.nfAdapt = 0.010;
+        this.cooldownMs = 250;
+
+        // freeze params
+        this.freezeAmount = 0.35;
+        this.freezeSustainMs = 220;
+
+        // ring buffer
+        this.ringLen = 32768;
+        this.ring = new Float32Array(this.ringLen);
+        this.w = 0;
+
+        // freeze loop
+        this.freezeActive = false;
+        this.freezeEndTime = 0;
+        this.loop = null;
+        this.loopLen = 0;
+        this.loopPos = 0;
+
+        this.attackMs = 6;
+        this.releaseMs = 90;
+        this.freezeStartTime = 0;
+
+        this.outLP = 0;
+
+        this.lastTriggerMs = 0;
+
+        this.port.onmessage = (e) => {
+          const d = e.data || {};
+          if (d.type === "PARAMS") {
+            if (typeof d.thr === "number") this.thr = d.thr;
+            if (typeof d.lf === "number") this.lfBias = d.lf;
+            if (typeof d.nf === "number") this.nfAdapt = d.nf;
+            if (typeof d.cooldownMs === "number") this.cooldownMs = d.cooldownMs;
+
+            if (typeof d.freezeAmount === "number") this.freezeAmount = d.freezeAmount;
+            if (typeof d.freezeSustainMs === "number") this.freezeSustainMs = d.freezeSustainMs;
+          }
+        };
+      }
+
+      idx(i) {
+        const n = this.ringLen;
+        i %= n;
+        return i < 0 ? i + n : i;
+      }
+
+      captureLoopAroundPeak(windowSamples) {
+        let peak = 0;
+        let peakIdx = this.w;
+        for (let k = 0; k < windowSamples; k++) {
+          const idx = this.idx(this.w - 1 - k);
+          const v = Math.abs(this.ring[idx]);
+          if (v > peak) { peak = v; peakIdx = idx; }
+        }
+
+        const loopMs = 18;
+        const loopLen = Math.max(128, Math.min(1024, Math.floor(sampleRate * loopMs / 1000)));
+        const start = this.idx(peakIdx - Math.floor(loopLen * 0.5));
+
+        const loop = new Float32Array(loopLen);
+        for (let i = 0; i < loopLen; i++) {
+          loop[i] = this.ring[this.idx(start + i)];
+        }
+
+        this.loop = loop;
+        this.loopLen = loopLen;
+        this.loopPos = 0;
+      }
+
+      envelopeGain(now) {
+        if (!this.freezeActive) return 0;
+
+        const t0 = this.freezeStartTime;
+        const t1 = this.freezeEndTime;
+        const att = this.attackMs / 1000;
+        const rel = this.releaseMs / 1000;
+
+        if (now < t0 + att) {
+          const x = (now - t0) / att;
+          return Math.max(0, Math.min(1, x));
+        }
+
+        if (now > t1 - rel) {
+          const x = (t1 - now) / rel;
+          return Math.max(0, Math.min(1, x));
+        }
+
+        return 1;
+      }
+
+      process(inputs, outputs) {
+        const input = inputs[0];
+        const output = outputs[0];
+
+        for (let ch = 0; ch < output.length; ch++) output[ch].fill(0);
+
+        if (input && input.length > 0 && input[0]) {
+          const ch0 = input[0];
+          const ch1 = input.length > 1 ? input[1] : null;
+
+          const adapt = this.nfAdapt;
+          const alphaDet = Math.exp(-2 * Math.PI * 180 / sampleRate);
+
+          let envSum = 0;
+          let lpAbs = 0;
+          let fullAbs = 0;
+
+          for (let i = 0; i < ch0.length; i++) {
+            const x = ch1 ? (0.5 * (ch0[i] + ch1[i])) : ch0[i];
+
+            this.ring[this.w] = x;
+            this.w = (this.w + 1) % this.ringLen;
+
+            const ax = Math.abs(x);
+            envSum += ax;
+
+            this.lp = alphaDet * this.lp + (1 - alphaDet) * x;
+            lpAbs += Math.abs(this.lp);
+            fullAbs += ax;
+          }
+
+          const env = envSum / ch0.length;
+
+          this.base = (1 - adapt) * this.base + adapt * env;
+
+          const spike = env - this.base;
+          const onset = env - this.lastEnv;
+          this.lastEnv = env;
+
+          const ratio = fullAbs > 0 ? (lpAbs / fullAbs) : 0;
+
+          const onsetMin = 0.010 + this.thr * 0.08;
+          const early =
+            spike > (this.thr * 0.65) &&
+            onset > (onsetMin * 0.65);
+
+          const nowMs = currentTime * 1000;
+
+          if (early && (nowMs - this.lastTriggerMs) > this.cooldownMs) {
+            this.lastTriggerMs = nowMs;
+
+            const ratioMin = 0.10 + this.lfBias * 0.20;
+
+            if (this.freezeAmount > 0 && this.freezeSustainMs > 0) {
+              const winSamples = Math.max(256, Math.min(this.ringLen - 1, Math.floor(sampleRate * 0.12)));
+              this.captureLoopAroundPeak(winSamples);
+              this.freezeActive = true;
+              this.freezeStartTime = currentTime;
+              this.freezeEndTime = currentTime + (this.freezeSustainMs / 1000);
+            }
+
+            this.port.postMessage({ type: "EARLY", spike, onset, ratio, ratioMin });
+
+            if (ratio > ratioMin) {
+              this.port.postMessage({ type: "CONFIRM", ratio });
+            } else {
+              this.port.postMessage({ type: "NEED_CONFIRM", ratio, ratioMin });
+            }
+          }
+        }
+
+        if (this.freezeActive && this.loop && this.loopLen > 0) {
+          const now = currentTime;
+          if (now >= this.freezeEndTime) {
+            this.freezeActive = false;
+          } else {
+            const gEnv = this.envelopeGain(now);
+            const amt = this.freezeAmount * gEnv;
+
+            const alphaOut = Math.exp(-2 * Math.PI * 220 / sampleRate);
+            const xf = Math.max(16, Math.min(256, Math.floor(this.loopLen * 0.25)));
+
+            for (let i = 0; i < output[0].length; i++) {
+              const p = this.loopPos;
+              let s = this.loop[p];
+
+              if (p >= this.loopLen - xf) {
+                const k = (p - (this.loopLen - xf)) / xf;
+                const a = 1 - k;
+                const b = k;
+                const head = this.loop[p - (this.loopLen - xf)];
+                s = a * s + b * head;
+              }
+
+              this.outLP = alphaOut * this.outLP + (1 - alphaOut) * s;
+              const y = this.outLP * amt;
+
+              for (let ch = 0; ch < output.length; ch++) {
+                output[ch][i] = y;
+              }
+
+              this.loopPos++;
+              if (this.loopPos >= this.loopLen) this.loopPos = 0;
+            }
+          }
+        }
+
+        return true;
+      }
+}
+registerProcessor("thud-detector", ThudDetector);
+`;
+                const blob = new Blob([workletCode], { type: "application/javascript" });
+                const url = URL.createObjectURL(blob);
+                await audioCtx.audioWorklet.addModule(url);
+                URL.revokeObjectURL(url);
+
+                thudNode = new AudioWorkletNode(audioCtx, "thud-detector", {
+                    numberOfInputs: 1,
+                    numberOfOutputs: 1,
+                    outputChannelCount: [2]
+                });
+
+                thudNode.port.onmessage = (e) => handleThudWorkletMessage(e.data);
+
+                thudNode.connect(audioCtx.destination);
+
+                workletReady = true;
+                return;
+            }
+
+            // Fallback: ScriptProcessorNode
+            const bufferSize = 256;
+            const sp = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+
+            fbRingLen = 32768;
+            fbRing = new Float32Array(fbRingLen);
+            fbRingWrite = 0;
+
+            sp.onaudioprocess = (ev) => {
+                const ch0 = ev.inputBuffer.getChannelData(0);
+
+                for (let i = 0; i < ch0.length; i++) {
+                    fbRing[fbRingWrite] = ch0[i];
+                    fbRingWrite = (fbRingWrite + 1) % fbRingLen;
+                }
+
+                handleThudSamplesFallback(ch0, audioCtx.sampleRate);
+
+                const out = ev.outputBuffer.getChannelData(0);
+                out.fill(0);
+            };
+
+            thudNode = sp;
+        }
+
+        function pushParamsToDetector() {
+            const payload = {
+                type: "PARAMS",
+                thr: Number(thr.value),
+                lf: Number(lf.value),
+                nf: Number(nf.value),
+                cooldownMs: Math.max(EARLY_COOLDOWN_MS, Number(cd.value)),
+                freezeAmount: Number(freezeAmt.value),
+                freezeSustainMs: Number(freezeMs.value)
+            };
+            if (thudNode && thudNode.port) {
+                thudNode.port.postMessage(payload);
+            }
+        }
+        [thr, lf, cd, nf, freezeAmt, freezeMs].forEach(el => el.addEventListener("input", pushParamsToDetector));
+
+        function handleThudWorkletMessage(msg) {
+            const nowMs = performance.now();
+
+            if (msg?.type === "EARLY") {
+                if (nowMs - lastEarlyAtMs < EARLY_COOLDOWN_MS) return;
+                lastEarlyAtMs = nowMs;
+
+                registerThudForCombo(nowMs);
+
+                pendingThud = true;
+                confirmDeadlineMs = nowMs + CONFIRM_WINDOW_MS;
+
+                // Peak Align: schedule explosion slightly ahead so it lands at thud peak
+                const alignMs = Number(peakAlign.value) || 0;
+                const when = audioCtx.currentTime + (alignMs / 1000);
+
+                playExplosion3Now({ when });
+
+                thudCount++;
+                countEl.textContent = String(thudCount);
+                addLog(`THUD(EARLY) #${thudCount} spike=${Number(msg.spike).toFixed(3)} onset=${Number(msg.onset).toFixed(3)} ratio≈${Number(msg.ratio).toFixed(2)} (align=${alignMs}ms, offset=${Number(expOffset.value)}ms)`);
+
+                return;
+            }
+
+            if (msg?.type === "CONFIRM") {
+                if (!pendingThud) return;
+
+                // Confirm: ensure explosion is at full gain quickly
+                restoreExplosion3Fast();
+
+                pendingThud = false;
+                addLog(`THUD(CONFIRM worklet) ratio≈${Number(msg.ratio).toFixed(2)}`);
+                return;
+            }
+        }
+
+        // ---- Fallback detection + fallback freeze playback ----
+        let fb_base = 0.02;
+        let fb_lastEnv = 0;
+        let fb_lp = 0;
+        let fb_lastTriggerMs = 0;
+
+        function idxRing(i) {
+            i %= fbRingLen;
+            return i < 0 ? i + fbRingLen : i;
+        }
+
+        function playThudFreezeFallback(sampleRate) {
+            const amt = Number(freezeAmt.value);
+            const sustain = Number(freezeMs.value);
+            if (!audioCtx || !fbRing || amt <= 0 || sustain <= 0) return;
+
+            const win = Math.max(256, Math.floor(sampleRate * 0.12));
+            let peak = 0;
+            let peakIdx = fbRingWrite;
+
+            for (let k = 0; k < win; k++) {
+                const ii = idxRing(fbRingWrite - 1 - k);
+                const v = Math.abs(fbRing[ii]);
+                if (v > peak) { peak = v; peakIdx = ii; }
+            }
+
+            const loopMs = 18;
+            const loopLen = Math.max(128, Math.min(1024, Math.floor(sampleRate * loopMs / 1000)));
+            const start = idxRing(peakIdx - Math.floor(loopLen * 0.5));
+
+            const buf = audioCtx.createBuffer(1, loopLen, sampleRate);
+            const data = buf.getChannelData(0);
+            for (let i = 0; i < loopLen; i++) {
+                data[i] = fbRing[idxRing(start + i)];
+            }
+
+            const src = audioCtx.createBufferSource();
+            src.buffer = buf;
+            src.loop = true;
+
+            const lp = audioCtx.createBiquadFilter();
+            lp.type = "lowpass";
+            lp.frequency.value = 220;
+
+            const g = audioCtx.createGain();
+            g.gain.value = 0;
+
+            src.connect(lp);
+            lp.connect(g);
+            g.connect(freezeBusGain);
+
+            const t = audioCtx.currentTime;
+            const att = 0.006;
+            const rel = 0.090;
+            const dur = sustain / 1000;
+
+            g.gain.cancelScheduledValues(t);
+            g.gain.setValueAtTime(0.0, t);
+            g.gain.linearRampToValueAtTime(amt, t + att);
+            g.gain.setValueAtTime(amt, t + Math.max(att, dur - rel));
+            g.gain.linearRampToValueAtTime(0.0, t + dur);
+
+            src.start(t);
+            src.stop(t + dur + 0.02);
+
+            src.onended = () => {
+                try { src.disconnect(); } catch { }
+                try { lp.disconnect(); } catch { }
+                try { g.disconnect(); } catch { }
+            };
+        }
+
+        function handleThudSamplesFallback(samples, sampleRate) {
+            const thrV = Number(thr.value);
+            const lfV = Number(lf.value);
+            const nfV = Number(nf.value);
+            const cooldownMs = Math.max(EARLY_COOLDOWN_MS, Number(cd.value));
+
+            const alpha = Math.exp(-2 * Math.PI * 180 / sampleRate);
+
+            let envSum = 0;
+            let lpAbs = 0;
+            let fullAbs = 0;
+
+            for (let i = 0; i < samples.length; i++) {
+                const x = samples[i];
+                const ax = Math.abs(x);
+                envSum += ax;
+
+                fb_lp = alpha * fb_lp + (1 - alpha) * x;
+                lpAbs += Math.abs(fb_lp);
+                fullAbs += ax;
+            }
+
+            const env = envSum / samples.length;
+            fb_base = (1 - nfV) * fb_base + nfV * env;
+
+            const spike = env - fb_base;
+            const onset = env - fb_lastEnv;
+            fb_lastEnv = env;
+
+            const onsetMin = 0.010 + thrV * 0.08;
+            const early =
+                spike > (thrV * 0.65) &&
+                onset > (onsetMin * 0.65);
+
+            const ratio = fullAbs > 0 ? (lpAbs / fullAbs) : 0;
+            const ratioMin = 0.10 + lfV * 0.20;
+
+            const nowMs = performance.now();
+
+            if (early && (nowMs - fb_lastTriggerMs) > cooldownMs) {
+                fb_lastTriggerMs = nowMs;
+
+                if (nowMs - lastEarlyAtMs >= EARLY_COOLDOWN_MS) {
+                    lastEarlyAtMs = nowMs;
+
+                    registerThudForCombo(nowMs);
+
+                    pendingThud = true;
+                    confirmDeadlineMs = nowMs + CONFIRM_WINDOW_MS;
+
+                    playThudFreezeFallback(sampleRate);
+
+                    const alignMs = Number(peakAlign.value) || 0;
+                    const when = audioCtx.currentTime + (alignMs / 1000);
+                    playExplosion3Now({ when });
+
+                    thudCount++;
+                    countEl.textContent = String(thudCount);
+                    addLog(`THUD(EARLY fallback) #${thudCount} spike=${spike.toFixed(3)} onset=${onset.toFixed(3)} ratio≈${ratio.toFixed(2)} (align=${alignMs}ms, offset=${Number(expOffset.value)}ms)`);
+
+                    if (ratio > ratioMin) {
+                        restoreExplosion3Fast();
+                        pendingThud = false;
+                        addLog(`THUD(CONFIRM fallback) ratio≈${ratio.toFixed(2)}`);
+                    }
+                }
+            }
+        }
+
+        // ---- Analyser helpers (meter + optional confirm) ----
+        function computeRms(timeData) {
+            let sum = 0;
+            for (let i = 0; i < timeData.length; i++) {
+                const v = (timeData[i] - 128) / 128;
+                sum += v * v;
+            }
+            return Math.sqrt(sum / timeData.length);
+        }
+
+        function computeLowFreqRatio(freqData, sampleRate, fftSize) {
+            const nyquist = sampleRate / 2;
+            const binHz = nyquist / (freqData.length);
+            const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+
+            const loStart = 20, loEnd = 160;
+            const hiEnd = 1000;
+
+            const loA = clamp(Math.floor(loStart / binHz), 0, freqData.length - 1);
+            const loB = clamp(Math.floor(loEnd / binHz), 0, freqData.length - 1);
+            const hiB = clamp(Math.floor(hiEnd / binHz), 0, freqData.length - 1);
+
+            let low = 0, total = 0;
+            for (let i = loA; i <= hiB; i++) {
+                const mag = freqData[i] / 255;
+                const e = mag * mag;
+                total += e;
+                if (i >= loA && i <= loB) low += e;
+            }
+            return total > 0 ? (low / total) : 0;
+        }
+
+        function updateMeter(level) {
+            const pct = Math.max(0, Math.min(100, (level / 0.35) * 100));
+            barEl.style.width = pct.toFixed(1) + "%";
+            levelTextEl.textContent = `level: ${level.toFixed(3)}  (base: ${baseline.toFixed(3)})`;
+        }
+
+        function detectLoop() {
+            if (!analyser) return;
+
+            const timeData = new Uint8Array(analyser.fftSize);
+            const freqData = new Uint8Array(analyser.frequencyBinCount);
+
+            analyser.getByteTimeDomainData(timeData);
+            analyser.getByteFrequencyData(freqData);
+
+            const level = computeRms(timeData);
+
+            const adapt = Number(nf.value);
+            baseline = (1 - adapt) * baseline + adapt * level;
+
+            updateMeter(level);
+
+            // Optional confirm window:
+            if (pendingThud) {
+                const nowMs = performance.now();
+                if (nowMs > confirmDeadlineMs) {
+                    // If not confirmed, soften quickly (instead of starting quiet)
+                    softenExplosion3Fast();
+                    pendingThud = false;
+                    addLog("THUD(NO CONFIRM) softened");
+                } else {
+                    const ratio = computeLowFreqRatio(freqData, audioCtx.sampleRate, analyser.fftSize);
+                    const ratioMin = 0.08 + (Number(lf.value) * 0.22);
+                    if (ratio > ratioMin) {
+                        restoreExplosion3Fast();
+                        pendingThud = false;
+                        addLog(`THUD(CONFIRM main) ratio=${ratio.toFixed(2)}`);
+                    }
+                }
+            }
+
+            lastLevel = level;
+            rafId = requestAnimationFrame(detectLoop);
+        }
+
+        async function unlockSounds() {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state !== "running") await audioCtx.resume();
+
+                await Promise.all([loadExplosion3(), loadExplosion5()]);
+
+                const tick = audioCtx.createBufferSource();
+                const buf = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+                tick.buffer = buf;
+                tick.connect(audioCtx.destination);
+                tick.start();
+
+                setStatus("Sounds unlocked");
+                addLog("Sounds unlocked + explosions preloaded (3 + 5).");
+            } catch (e) {
+                console.error(e);
+                addLog(`ERROR unlocking sounds: ${e?.message || e}`);
+            }
+        }
+
+        async function start() {
+            try {
+                setStatus("Requesting mic access…");
+
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state !== "running") await audioCtx.resume();
+
+                await setupThudWorkletOrFallback();
+                pushParamsToDetector();
+
+                await applyKeepAwakeSetting();
+
+                try { await Promise.all([loadExplosion3(), loadExplosion5()]); } catch (e) { addLog(`WARN: preload failed: ${e?.message || e}`); }
+
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        // For tightest transient timing + best freeze, try turning these OFF:
+                        // echoCancellation: false,
+                        // noiseSuppression: false,
+                        // autoGainControl: false
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: false
+                    }
+                });
+
+                source = audioCtx.createMediaStreamSource(stream);
+
+                if (thudNode) {
+                    source.connect(thudNode);
+
+                    // ScriptProcessor must be connected to run
+                    if (thudNode instanceof ScriptProcessorNode) {
+                        thudNode.connect(audioCtx.destination);
+                    }
+                }
+
+                filterLow = audioCtx.createBiquadFilter();
+                filterLow.type = "lowpass";
+                filterLow.frequency.value = 220;
+
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 1024;
+                analyser.smoothingTimeConstant = 0.08;
+
+                source.connect(filterLow);
+                filterLow.connect(analyser);
+
+                baseline = 0.02;
+                lastLevel = 0;
+                pendingThud = false;
+                recentThudsMs = [];
+                lastComboAtMs = 0;
+
+                setStatus("Listening");
+                addLog("Listening started.");
+
+                btnStart.disabled = true;
+                btnStop.disabled = false;
+                btnReset.disabled = false;
+                btnClearLog.disabled = false;
+
+                detectLoop();
+            } catch (err) {
+                console.error(err);
+                setStatus("Mic permission denied / error");
+
+                const details = `${err?.name || "Error"}: ${err?.message || err}`;
+                addLog(`ERROR: ${details}`);
+
+                await stop();
+            }
+        }
+
+        async function stop() {
+            if (rafId) cancelAnimationFrame(rafId);
+            rafId = null;
+
+            if (analyser) { try { analyser.disconnect(); } catch { } }
+            if (filterLow) { try { filterLow.disconnect(); } catch { } }
+            if (source) { try { source.disconnect(); } catch { } }
+
+            analyser = null;
+            filterLow = null;
+            source = null;
+
+            if (thudNode) {
+                try { thudNode.disconnect(); } catch { }
+            }
+
+            if (stream) {
+                stream.getTracks().forEach(t => t.stop());
+                stream = null;
+            }
+
+            await disableKeepAwake();
+
+            if (audioCtx) {
+                try { await audioCtx.suspend(); } catch { }
+            }
+
+            btnStart.disabled = false;
+            btnStop.disabled = true;
+            btnReset.disabled = false;
+            btnClearLog.disabled = false;
+
+            setStatus("Stopped");
+            addLog("Listening stopped.");
+            updateMeter(0);
+
+            pendingThud = false;
+            recentThudsMs = [];
+        }
+
+        function resetCount() {
+            thudCount = 0;
+            countEl.textContent = "0";
+            addLog("Count reset.");
+        }
+
+        function clearLog() {
+            logEl.textContent = "";
+        }
+
+        btnUnlockSounds.addEventListener("click", unlockSounds);
+        btnStart.addEventListener("click", start);
+        btnStop.addEventListener("click", stop);
+        btnReset.addEventListener("click", resetCount);
+        btnClearLog.addEventListener("click", clearLog);
+
+        document.addEventListener("visibilitychange", () => {
+            if (document.hidden && stream) stop();
+        });
+    </script>
+</body>
+</html>
