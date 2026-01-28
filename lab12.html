@@ -399,7 +399,8 @@
             if (explosion3FetchPromise) return explosion3FetchPromise;
 
             explosion3FetchPromise = (async () => {
-                explosion3Buffer = await loadBuffer("assets/explosion3.mp3");
+                //explosion3Buffer = await loadBuffer("assets/explosion3.mp3");
+                explosion3Buffer = await loadBuffer("assets/nuclear_bomb_11.mp3");
                 exp3Voices = new Array(EXP3_VOICES).fill(null).map(() => ({ src: null, gain: null }));
                 return explosion3Buffer;
             })();
