@@ -1,0 +1,1202 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Thud Counter (Mic Listener)</title>
+    <style>
+        :root {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        }
+
+        body {
+            margin: 24px;
+            max-width: 900px;
+        }
+
+        h1 {
+            margin: 0 0 8px;
+        }
+
+        .row {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        button {
+            padding: 10px 14px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 16px;
+            box-shadow: 0 1px 8px rgba(0,0,0,0.06);
+        }
+
+        .stat {
+            font-size: 40px;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .muted {
+            color: #555;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        input[type="range"] {
+            width: 320px;
+            max-width: 90vw;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        @media (max-width: 720px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .meterWrap {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .meter {
+            width: 420px;
+            max-width: 90vw;
+            height: 14px;
+            border-radius: 999px;
+            background: #eee;
+            overflow: hidden;
+            border: 1px solid #ddd;
+        }
+
+        .bar {
+            height: 100%;
+            width: 0%;
+            background: #2b7;
+            transition: width 60ms linear;
+        }
+
+        .pill {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 999px;
+            background: #f3f3f3;
+            border: 1px solid #ddd;
+        }
+
+        #log {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Thud Counter</h1>
+    <div class="muted">
+        Click <b>Start</b>, allow microphone access, then it will detect sudden “thud” impacts (tunable).
+    </div>
+
+    <div class="row" style="margin-top:12px;">
+        <button id="btnUnlockSounds">Unlock Sounds</button>
+        <button id="btnStart">Start</button>
+        <button id="btnStop" disabled>Stop</button>
+        <button id="btnReset" disabled>Reset Count</button>
+        <span class="pill" id="status">Idle</span>
+    </div>
+
+    <div class="card grid">
+        <div>
+            <div class="muted">Thuds detected</div>
+            <div class="stat" id="count">0</div>
+
+            <div style="margin-top:14px;" class="meterWrap">
+                <div class="meter"><div class="bar" id="bar"></div></div>
+                <span class="pill" id="levelText">level: 0.000</span>
+            </div>
+
+            <div class="muted" style="margin-top:10px;">
+                Pro mode for iPhone Safari:
+                <ul style="margin:8px 0 0 18px; padding:0;">
+                    <li><b>AudioWorklet</b> does onset/peak-ish detection on the audio thread.</li>
+                    <li><b>Rapid retrigger</b> uses re-arming (must “fall” from peak) instead of long cooldowns.</li>
+                    <li><b>Explosion Start Offset</b> skips the MP3’s soft start so it hits instantly.</li>
+                    <li><b>Peak Align</b> schedules explosion a few ms forward to land on the thud’s peak.</li>
+                    <li>
+                        <b>Thud Freeze</b> optionally holds a tiny snippet of the actual thud so it feels seamless.
+                        (Auto-reduced during rapid bursts to avoid smearing & missed hits.)
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <div>
+            <div class="muted" style="margin-bottom:8px;">Tuning</div>
+
+            <label>
+                Sensitivity (Volume Spike Threshold): <span id="thrVal"></span>
+            </label>
+            <input id="thr" type="range" min="0.01" max="0.40" step="0.005" value="0.10" />
+
+            <label>
+                Low-Freq Bias (0 = off, 1 = strict thud): <span id="lfVal"></span>
+            </label>
+            <input id="lf" type="range" min="0" max="1" step="0.05" value="0.55" />
+
+            <label>
+                Cooldown (ms, legacy): <span id="cdVal"></span>
+            </label>
+            <input id="cd" type="range" min="0" max="500" step="10" value="60" />
+
+            <label>
+                Rapid Retrigger Min Gap (ms): <span id="rtVal"></span>
+            </label>
+            <input id="rt" type="range" min="15" max="120" step="1" value="35" />
+
+            <label>
+                Re-arm Falloff (% of peak): <span id="rfVal"></span>
+            </label>
+            <input id="rf" type="range" min="0.30" max="0.90" step="0.01" value="0.55" />
+
+            <label>
+                Noise Floor Adaptation (higher = adapts faster): <span id="nfVal"></span>
+            </label>
+            <input id="nf" type="range" min="0.001" max="0.08" step="0.001" value="0.010" />
+
+            <label>
+                3-Thud Combo Window (ms): <span id="comboVal"></span>
+            </label>
+            <input id="combo" type="range" min="200" max="2000" step="50" value="650" />
+
+            <label>
+                Thud Freeze Amount (0..100%): <span id="freezeAmtVal"></span>
+            </label>
+            <input id="freezeAmt" type="range" min="0" max="1" step="0.01" value="0.28" />
+
+            <label>
+                Thud Freeze Sustain (ms): <span id="freezeMsVal"></span>
+            </label>
+            <input id="freezeMs" type="range" min="0" max="800" step="10" value="160" />
+
+            <label>
+                Peak Align (ms): <span id="peakAlignVal"></span>
+            </label>
+            <input id="peakAlign" type="range" min="0" max="40" step="1" value="14" />
+
+            <label>
+                Explosion Start Offset (ms): <span id="expOffsetVal"></span>
+            </label>
+            <input id="expOffset" type="range" min="0" max="120" step="1" value="20" />
+
+            <label>
+                Keep Screen Awake (iOS): <span id="wakeVal"></span>
+            </label>
+            <input id="wake" type="range" min="0" max="1" step="1" value="1" />
+
+            <div class="muted" style="margin-top:10px;">
+                Recommended for rapid bag combos:
+                <ul style="margin:8px 0 0 18px; padding:0;">
+                    <li><b>Rapid Retrigger</b>: 25–45ms</li>
+                    <li><b>Re-arm Falloff</b>: 0.50–0.65 (lower = more triggers; higher = fewer double-hits)</li>
+                    <li><b>Freeze</b>: 0–35% and 60–180ms (auto-reduced on fast bursts)</li>
+                    <li><b>Peak Align</b>: 10–18ms</li>
+                    <li><b>Explosion Offset</b>: 10–40ms depending on MP3</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="row" style="justify-content: space-between;">
+            <div class="muted">Event log (latest first)</div>
+            <button id="btnClearLog" disabled>Clear Log</button>
+        </div>
+        <div id="log" style="margin-top:10px;"></div>
+    </div>
+
+    <script>
+        // ---- UI ----
+        const $ = (id) => document.getElementById(id);
+
+        const btnUnlockSounds = $("btnUnlockSounds");
+        const btnStart = $("btnStart");
+        const btnStop = $("btnStop");
+        const btnReset = $("btnReset");
+        const btnClearLog = $("btnClearLog");
+
+        const statusEl = $("status");
+        const countEl = $("count");
+        const barEl = $("bar");
+        const levelTextEl = $("levelText");
+        const logEl = $("log");
+
+        const thr = $("thr"), lf = $("lf"), cd = $("cd"), rt = $("rt"), rf = $("rf"), nf = $("nf"), combo = $("combo");
+        const freezeAmt = $("freezeAmt"), freezeMs = $("freezeMs");
+        const peakAlign = $("peakAlign"), expOffset = $("expOffset");
+        const wake = $("wake");
+
+        const thrVal = $("thrVal"), lfVal = $("lfVal"), cdVal = $("cdVal"), rtVal = $("rtVal"), rfVal = $("rfVal"), nfVal = $("nfVal");
+        const comboVal = $("comboVal"), freezeAmtVal = $("freezeAmtVal"), freezeMsVal = $("freezeMsVal"), wakeVal = $("wakeVal");
+        const peakAlignVal = $("peakAlignVal"), expOffsetVal = $("expOffsetVal");
+
+        function syncLabels() {
+            thrVal.textContent = Number(thr.value).toFixed(3);
+            lfVal.textContent = Number(lf.value).toFixed(2);
+            cdVal.textContent = `${Number(cd.value).toFixed(0)}`;
+            rtVal.textContent = `${Number(rt.value).toFixed(0)}`;
+            rfVal.textContent = `${Math.round(Number(rf.value) * 100)}%`;
+            nfVal.textContent = Number(nf.value).toFixed(3);
+            comboVal.textContent = `${Number(combo.value).toFixed(0)}`;
+            freezeAmtVal.textContent = `${Math.round(Number(freezeAmt.value) * 100)}%`;
+            freezeMsVal.textContent = `${Number(freezeMs.value).toFixed(0)}`;
+            peakAlignVal.textContent = `${Number(peakAlign.value).toFixed(0)}`;
+            expOffsetVal.textContent = `${Number(expOffset.value).toFixed(0)}`;
+            wakeVal.textContent = Number(wake.value) === 1 ? "On" : "Off";
+        }
+        [thr, lf, cd, rt, rf, nf, combo, freezeAmt, freezeMs, peakAlign, expOffset, wake].forEach(el => el.addEventListener("input", syncLabels));
+        syncLabels();
+
+        function setStatus(text) { statusEl.textContent = text; }
+
+        function addLog(line) {
+            const now = new Date();
+            const ts = now.toLocaleTimeString();
+            const current = logEl.textContent.trim();
+            const next = `[${ts}] ${line}\n` + (current ? current + "\n" : "");
+            logEl.textContent = next.split("\n").slice(0, 110).join("\n");
+        }
+
+        // ---- Screen awake (Wake Lock + fallback) ----
+        let wakeLock = null;
+        let keepAwakeVideo = null;
+
+        async function enableKeepAwake() {
+            try {
+                if ("wakeLock" in navigator && navigator.wakeLock?.request) {
+                    wakeLock = await navigator.wakeLock.request("screen");
+                    addLog("Keep-awake: Wake Lock acquired.");
+                    wakeLock.addEventListener("release", () => {
+                        addLog("Keep-awake: Wake Lock released.");
+                        wakeLock = null;
+                    });
+                    return;
+                }
+            } catch (e) {
+                addLog(`Keep-awake: Wake Lock failed (${e?.message || e}). Trying fallback.`);
+            }
+
+            try {
+                if (!keepAwakeVideo) {
+                    keepAwakeVideo = document.createElement("video");
+                    keepAwakeVideo.setAttribute("playsinline", "");
+                    keepAwakeVideo.muted = true;
+                    keepAwakeVideo.loop = true;
+                    keepAwakeVideo.style.position = "fixed";
+                    keepAwakeVideo.style.width = "1px";
+                    keepAwakeVideo.style.height = "1px";
+                    keepAwakeVideo.style.opacity = "0";
+                    keepAwakeVideo.style.pointerEvents = "none";
+                    keepAwakeVideo.style.left = "-10px";
+                    keepAwakeVideo.style.top = "-10px";
+                    keepAwakeVideo.src =
+                        "data:video/mp4;base64,AAAAHGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAGQbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAABR0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAEAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAx0a2hkAAAAAwAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAEAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAEbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAVcQAAAAAAAABAAAAAAHN0YmwAAABMc3RzZAAAAAAAAAABAAAAAQAAABxzdHNkAAAAAAAAAAEAAAAMYXZjMQAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAABAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+                    document.body.appendChild(keepAwakeVideo);
+                }
+                await keepAwakeVideo.play();
+                addLog("Keep-awake: Fallback video playing.");
+            } catch (e) {
+                addLog(`Keep-awake: Fallback failed (${e?.message || e}).`);
+            }
+        }
+
+        async function disableKeepAwake() {
+            try { if (wakeLock) await wakeLock.release(); } catch { }
+            wakeLock = null;
+            try { if (keepAwakeVideo) keepAwakeVideo.pause(); } catch { }
+        }
+
+        async function applyKeepAwakeSetting() {
+            if (Number(wake.value) === 1) await enableKeepAwake();
+            else { await disableKeepAwake(); addLog("Keep-awake: Off."); }
+        }
+
+        wake.addEventListener("input", () => {
+            if (!btnStart.disabled) return;
+            applyKeepAwakeSetting();
+        });
+
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden && Number(wake.value) === 1 && btnStart.disabled) {
+                applyKeepAwakeSetting();
+            }
+        });
+
+        // ---- Audio / Mic ----
+        let audioCtx = null;
+        let stream = null;
+        let source = null;
+
+        // Analyser: meter + optional confirm window (helps prevent false positives)
+        let analyser = null;
+        let filterLow = null;
+        let rafId = null;
+
+        let thudCount = 0;
+
+        // Meter baseline
+        let baseline = 0.02;
+
+        // ---- Low-latency sound buffers (Web Audio) ----
+        let explosion3Buffer = null;
+        let explosion3FetchPromise = null;
+
+        let explosion5Buffer = null;
+        let explosion5FetchPromise = null;
+
+        // Polyphony: each voice has its own GainNode so rapid hits never fight over volume ramps
+        const EXP3_VOICES = 10;
+        const EXP5_VOICES = 5;
+
+        let exp3VoiceIndex = 0;
+        let exp5VoiceIndex = 0;
+
+        let exp3Voices = [];
+        let exp5Voices = [];
+
+        // For "no confirm" softening: we only soften the last-triggered exp3 voice
+        let lastExp3Gain = null;
+
+        async function loadBuffer(url) {
+            const res = await fetch(url, { cache: "force-cache" });
+            if (!res.ok) throw new Error(`Fetch failed (${res.status}) for ${new URL(url, location.href).href}`);
+            const arr = await res.arrayBuffer();
+            return await audioCtx.decodeAudioData(arr);
+        }
+
+        async function loadExplosion3() {
+            if (!audioCtx) throw new Error("audioCtx not initialized yet");
+            if (explosion3Buffer) return explosion3Buffer;
+            if (explosion3FetchPromise) return explosion3FetchPromise;
+
+            explosion3FetchPromise = (async () => {
+                explosion3Buffer = await loadBuffer("assets/explosion3.mp3");
+                exp3Voices = new Array(EXP3_VOICES).fill(null).map(() => ({ src: null, gain: null }));
+                return explosion3Buffer;
+            })();
+
+            return explosion3FetchPromise;
+        }
+
+        async function loadExplosion5() {
+            if (!audioCtx) throw new Error("audioCtx not initialized yet");
+            if (explosion5Buffer) return explosion5Buffer;
+            if (explosion5FetchPromise) return explosion5FetchPromise;
+
+            explosion5FetchPromise = (async () => {
+                explosion5Buffer = await loadBuffer("assets/explosion5.mp3");
+                exp5Voices = new Array(EXP5_VOICES).fill(null).map(() => ({ src: null, gain: null }));
+                return explosion5Buffer;
+            })();
+
+            return explosion5FetchPromise;
+        }
+
+        function clampOffsetSec(buffer, ms) {
+            const off = Math.max(0, (ms || 0) / 1000);
+            if (!buffer) return off;
+            const max = Math.max(0, buffer.duration - 0.01);
+            return Math.max(0, Math.min(off, max));
+        }
+
+        function playExplosion3Now({ when = null } = {}) {
+            if (!audioCtx || !explosion3Buffer) return;
+
+            const t = when ?? audioCtx.currentTime;
+            const off = clampOffsetSec(explosion3Buffer, Number(expOffset.value));
+
+            const v = exp3Voices[exp3VoiceIndex];
+            exp3VoiceIndex = (exp3VoiceIndex + 1) % EXP3_VOICES;
+
+            try { if (v.src) v.src.disconnect(); } catch { }
+            try { if (v.gain) v.gain.disconnect(); } catch { }
+
+            const src = audioCtx.createBufferSource();
+            src.buffer = explosion3Buffer;
+
+            const g = audioCtx.createGain();
+            g.gain.setValueAtTime(1.0, t);
+
+            src.connect(g);
+            g.connect(audioCtx.destination);
+
+            src.start(t, off);
+
+            v.src = src;
+            v.gain = g;
+
+            lastExp3Gain = g;
+
+            src.onended = () => {
+                try { src.disconnect(); } catch { }
+                try { g.disconnect(); } catch { }
+            };
+        }
+
+        function playExplosion5Now({ when = null } = {}) {
+            if (!audioCtx || !explosion5Buffer) return;
+
+            const t = when ?? audioCtx.currentTime;
+            const off = clampOffsetSec(explosion5Buffer, Number(expOffset.value));
+
+            const v = exp5Voices[exp5VoiceIndex];
+            exp5VoiceIndex = (exp5VoiceIndex + 1) % EXP5_VOICES;
+
+            try { if (v.src) v.src.disconnect(); } catch { }
+            try { if (v.gain) v.gain.disconnect(); } catch { }
+
+            const src = audioCtx.createBufferSource();
+            src.buffer = explosion5Buffer;
+
+            const g = audioCtx.createGain();
+            g.gain.setValueAtTime(1.0, t);
+
+            src.connect(g);
+            g.connect(audioCtx.destination);
+
+            src.start(t, off);
+
+            v.src = src;
+            v.gain = g;
+
+            src.onended = () => {
+                try { src.disconnect(); } catch { }
+                try { g.disconnect(); } catch { }
+            };
+        }
+
+        function softenLastExplosion3Fast() {
+            if (!audioCtx || !lastExp3Gain) return;
+            const t = audioCtx.currentTime;
+            try {
+                lastExp3Gain.gain.cancelScheduledValues(t);
+                lastExp3Gain.gain.setValueAtTime(lastExp3Gain.gain.value, t);
+                lastExp3Gain.gain.linearRampToValueAtTime(0.25, t + 0.03);
+            } catch { }
+        }
+
+        // ---- 3-thud combo detector ----
+        let recentThudsMs = [];
+        let lastComboAtMs = 0;
+
+        function registerThudForCombo(nowMs) {
+            const windowMs = Number(combo.value);
+            recentThudsMs.push(nowMs);
+            recentThudsMs = recentThudsMs.filter(t => (nowMs - t) <= windowMs);
+
+            const comboGuardMs = Math.max(140, Math.floor(windowMs / 3));
+            const canCombo = (nowMs - lastComboAtMs) > comboGuardMs;
+
+            if (canCombo && recentThudsMs.length >= 3) {
+                lastComboAtMs = nowMs;
+                recentThudsMs = [];
+
+                const alignMs = Number(peakAlign.value) || 0;
+                const when = audioCtx ? (audioCtx.currentTime + (alignMs / 1000)) : null;
+
+                playExplosion5Now({ when });
+                addLog(`COMBO x3! Played explosion5 (window=${windowMs}ms, align=${alignMs}ms, offset=${Number(expOffset.value)}ms)`);
+            }
+        }
+
+        // ---- Pro detection (AudioWorklet preferred, ScriptProcessor fallback) ----
+        let thudNode = null;
+        let workletReady = false;
+
+        // confirm-window state
+        let pendingThud = false;
+        let confirmDeadlineMs = 0;
+        const CONFIRM_WINDOW_MS = 55;
+
+        // Small main-thread dupe guard in case Safari double-posts messages occasionally
+        const MAIN_THREAD_DUP_GUARD_MS = 10;
+        let lastEarlyMsgAtMs = 0;
+
+        async function setupThudWorkletOrFallback() {
+            if (!audioCtx) throw new Error("audioCtx missing");
+
+            if (audioCtx.audioWorklet && !workletReady) {
+                const workletCode = `
+class ThudDetector extends AudioWorkletProcessor {
+      constructor() {
+        super();
+
+        // detection
+        this.base = 0.02;
+        this.lastEnv = 0;
+        this.lp = 0;
+
+        this.thr = 0.10;
+        this.lfBias = 0.55;
+        this.nfAdapt = 0.010;
+
+        // legacy cooldown (kept, but we mostly use re-arm logic)
+        this.cooldownMs = 60;
+
+        // rapid retrigger
+        this.minRetriggerMs = 35;
+        this.resetRatio = 0.55;
+
+        this.armed = true;
+        this.peakEnv = 0;
+        this.lastFireMs = -1e9;
+
+        // freeze
+        this.freezeAmount = 0.28;
+        this.freezeSustainMs = 160;
+
+        // ring buffer (for freeze)
+        this.ringLen = 32768;
+        this.ring = new Float32Array(this.ringLen);
+        this.w = 0;
+
+        // freeze loop
+        this.freezeActive = false;
+        this.freezeEndTime = 0;
+        this.loop = null;
+        this.loopLen = 0;
+        this.loopPos = 0;
+
+        this.attackMs = 6;
+        this.releaseMs = 80;
+
+        // output LP for freeze
+        this.outLP = 0;
+
+        // burst handling (auto-reduce freeze on rapid hits)
+        this.burstMs = 120;
+
+        this.port.onmessage = (e) => {
+          const d = e.data || {};
+          if (d.type === "PARAMS") {
+            if (typeof d.thr === "number") this.thr = d.thr;
+            if (typeof d.lf === "number") this.lfBias = d.lf;
+            if (typeof d.nf === "number") this.nfAdapt = d.nf;
+            if (typeof d.cooldownMs === "number") this.cooldownMs = d.cooldownMs;
+
+            if (typeof d.minRetriggerMs === "number") this.minRetriggerMs = d.minRetriggerMs;
+            if (typeof d.resetRatio === "number") this.resetRatio = d.resetRatio;
+
+            if (typeof d.freezeAmount === "number") this.freezeAmount = d.freezeAmount;
+            if (typeof d.freezeSustainMs === "number") this.freezeSustainMs = d.freezeSustainMs;
+          }
+        };
+      }
+
+      idx(i) {
+        const n = this.ringLen;
+        i %= n;
+        return i < 0 ? i + n : i;
+      }
+
+      captureLoopAroundPeak(windowSamples) {
+        let peak = 0;
+        let peakIdx = this.w;
+
+        for (let k = 0; k < windowSamples; k++) {
+          const idx = this.idx(this.w - 1 - k);
+          const v = Math.abs(this.ring[idx]);
+          if (v > peak) { peak = v; peakIdx = idx; }
+        }
+
+        const loopMs = 16; // short so it doesn't smear fast combos
+        const loopLen = Math.max(128, Math.min(768, Math.floor(sampleRate * loopMs / 1000)));
+        const start = this.idx(peakIdx - Math.floor(loopLen * 0.5));
+
+        const loop = new Float32Array(loopLen);
+        for (let i = 0; i < loopLen; i++) loop[i] = this.ring[this.idx(start + i)];
+
+        this.loop = loop;
+        this.loopLen = loopLen;
+        this.loopPos = 0;
+      }
+
+      envelopeGain(now, startTime, endTime) {
+        const att = this.attackMs / 1000;
+        const rel = this.releaseMs / 1000;
+
+        if (now < startTime + att) {
+          const x = (now - startTime) / att;
+          return Math.max(0, Math.min(1, x));
+        }
+        if (now > endTime - rel) {
+          const x = (endTime - now) / rel;
+          return Math.max(0, Math.min(1, x));
+        }
+        return 1;
+      }
+
+      process(inputs, outputs) {
+        const input = inputs[0];
+        const output = outputs[0];
+        for (let ch = 0; ch < output.length; ch++) output[ch].fill(0);
+
+        if (input && input.length > 0 && input[0]) {
+          const ch0 = input[0];
+          const ch1 = input.length > 1 ? input[1] : null;
+
+          const adapt = this.nfAdapt;
+          const alphaDet = Math.exp(-2 * Math.PI * 180 / sampleRate);
+
+          let envSum = 0;
+          let lpAbs = 0;
+          let fullAbs = 0;
+
+          for (let i = 0; i < ch0.length; i++) {
+            const x = ch1 ? (0.5 * (ch0[i] + ch1[i])) : ch0[i];
+
+            this.ring[this.w] = x;
+            this.w = (this.w + 1) % this.ringLen;
+
+            const ax = Math.abs(x);
+            envSum += ax;
+
+            this.lp = alphaDet * this.lp + (1 - alphaDet) * x;
+            lpAbs += Math.abs(this.lp);
+            fullAbs += ax;
+          }
+
+          const env = envSum / ch0.length;
+
+          // Peak tracking for re-arm logic
+          if (env > this.peakEnv) this.peakEnv = env;
+          else this.peakEnv *= 0.995;
+
+          // Adaptive baseline
+          this.base = (1 - adapt) * this.base + adapt * env;
+
+          const spike = env - this.base;
+          const onset = env - this.lastEnv;
+          this.lastEnv = env;
+
+          const ratio = fullAbs > 0 ? (lpAbs / fullAbs) : 0;
+
+          // Early trigger logic
+          const onsetMin = 0.010 + this.thr * 0.08;
+          const early =
+            spike > (this.thr * 0.65) &&
+            onset > (onsetMin * 0.65);
+
+          const nowMs = currentTime * 1000;
+
+          // Re-arm when fallen from peak and min gap elapsed
+          if (!this.armed) {
+            const fallenEnough = env < (this.peakEnv * this.resetRatio);
+            const timeOk = (nowMs - this.lastFireMs) >= this.minRetriggerMs;
+            const legacyOk = (nowMs - this.lastFireMs) >= this.cooldownMs;
+            if (fallenEnough && timeOk && legacyOk) {
+              this.armed = true;
+            }
+          }
+
+          if (this.armed && early) {
+            const sinceLast = nowMs - this.lastFireMs;
+            this.armed = false;
+            this.lastFireMs = nowMs;
+
+            const ratioMin = 0.10 + this.lfBias * 0.20;
+
+            // Freeze: auto-reduce in bursts so rapid hits stay crisp
+            let freezeAmt = this.freezeAmount;
+            let freezeMs = this.freezeSustainMs;
+
+            if (sinceLast < this.burstMs) {
+              freezeAmt *= 0.25;
+              freezeMs = Math.min(freezeMs, 70);
+            }
+
+            if (freezeAmt > 0 && freezeMs > 0) {
+              const winSamples = Math.max(256, Math.min(this.ringLen - 1, Math.floor(sampleRate * 0.10)));
+              this.captureLoopAroundPeak(winSamples);
+              this.freezeActive = true;
+              this.freezeStartTime = currentTime;
+              this.freezeEndTime = currentTime + (freezeMs / 1000);
+              this.freezeAmtActive = freezeAmt;
+            }
+
+            this.port.postMessage({ type: "EARLY", spike, onset, ratio, ratioMin });
+
+            if (ratio > ratioMin) {
+              this.port.postMessage({ type: "CONFIRM", ratio });
+            } else {
+              this.port.postMessage({ type: "NEED_CONFIRM", ratio, ratioMin });
+            }
+          }
+        }
+
+        // Freeze render
+        if (this.freezeActive && this.loop && this.loopLen > 0) {
+          const now = currentTime;
+          if (now >= this.freezeEndTime) {
+            this.freezeActive = false;
+          } else {
+            const gEnv = this.envelopeGain(now, this.freezeStartTime, this.freezeEndTime);
+            const amt = (this.freezeAmtActive || 0) * gEnv;
+
+            const alphaOut = Math.exp(-2 * Math.PI * 220 / sampleRate);
+            const xf = Math.max(16, Math.min(192, Math.floor(this.loopLen * 0.25)));
+
+            for (let i = 0; i < output[0].length; i++) {
+              const p = this.loopPos;
+              let s = this.loop[p];
+
+              if (p >= this.loopLen - xf) {
+                const k = (p - (this.loopLen - xf)) / xf;
+                const head = this.loop[p - (this.loopLen - xf)];
+                s = (1 - k) * s + k * head;
+              }
+
+              this.outLP = alphaOut * this.outLP + (1 - alphaOut) * s;
+              const y = this.outLP * amt;
+
+              for (let ch = 0; ch < output.length; ch++) output[ch][i] = y;
+
+              this.loopPos++;
+              if (this.loopPos >= this.loopLen) this.loopPos = 0;
+            }
+          }
+        }
+
+        return true;
+      }
+}
+registerProcessor("thud-detector", ThudDetector);
+`;
+                const blob = new Blob([workletCode], { type: "application/javascript" });
+                const url = URL.createObjectURL(blob);
+                await audioCtx.audioWorklet.addModule(url);
+                URL.revokeObjectURL(url);
+
+                thudNode = new AudioWorkletNode(audioCtx, "thud-detector", {
+                    numberOfInputs: 1,
+                    numberOfOutputs: 1,
+                    outputChannelCount: [2]
+                });
+
+                thudNode.port.onmessage = (e) => handleThudWorkletMessage(e.data);
+
+                // Must be connected to run; output is only freeze (worklet is silent otherwise)
+                thudNode.connect(audioCtx.destination);
+
+                workletReady = true;
+                return;
+            }
+
+            // Fallback: ScriptProcessorNode
+            const bufferSize = 256;
+            const sp = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+            sp.onaudioprocess = (ev) => {
+                const ch0 = ev.inputBuffer.getChannelData(0);
+                handleThudSamplesFallback(ch0, audioCtx.sampleRate);
+                const out = ev.outputBuffer.getChannelData(0);
+                out.fill(0);
+            };
+            thudNode = sp;
+        }
+
+        function pushParamsToDetector() {
+            const payload = {
+                type: "PARAMS",
+                thr: Number(thr.value),
+                lf: Number(lf.value),
+                nf: Number(nf.value),
+                cooldownMs: Number(cd.value),
+                minRetriggerMs: Number(rt.value),
+                resetRatio: Number(rf.value),
+                freezeAmount: Number(freezeAmt.value),
+                freezeSustainMs: Number(freezeMs.value)
+            };
+            if (thudNode && thudNode.port) thudNode.port.postMessage(payload);
+        }
+        [thr, lf, cd, rt, rf, nf, freezeAmt, freezeMs].forEach(el => el.addEventListener("input", pushParamsToDetector));
+
+        function handleThudWorkletMessage(msg) {
+            const nowMs = performance.now();
+
+            if (msg?.type === "EARLY") {
+                if (nowMs - lastEarlyMsgAtMs < MAIN_THREAD_DUP_GUARD_MS) return;
+                lastEarlyMsgAtMs = nowMs;
+
+                registerThudForCombo(nowMs);
+
+                pendingThud = true;
+                confirmDeadlineMs = nowMs + CONFIRM_WINDOW_MS;
+
+                const alignMs = Number(peakAlign.value) || 0;
+                const when = audioCtx.currentTime + (alignMs / 1000);
+                playExplosion3Now({ when });
+
+                thudCount++;
+                countEl.textContent = String(thudCount);
+
+                addLog(
+                    `THUD(EARLY) #${thudCount} ` +
+                    `spike=${Number(msg.spike).toFixed(3)} onset=${Number(msg.onset).toFixed(3)} ratio≈${Number(msg.ratio).toFixed(2)} ` +
+                    `(rt=${Number(rt.value)}ms, falloff=${Math.round(Number(rf.value) * 100)}%, align=${alignMs}ms, offset=${Number(expOffset.value)}ms)`
+                );
+                return;
+            }
+
+            if (msg?.type === "CONFIRM") {
+                // We play full-volume immediately; confirm just clears the "soften if false" window.
+                if (!pendingThud) return;
+                pendingThud = false;
+                addLog(`THUD(CONFIRM) ratio≈${Number(msg.ratio).toFixed(2)}`);
+                return;
+            }
+        }
+
+        // ---- ScriptProcessor fallback detection ----
+        // Note: fallback won't be as tight as worklet, but these settings still handle rapid bursts well.
+        let fb_base = 0.02;
+        let fb_lastEnv = 0;
+        let fb_lp = 0;
+
+        let fb_armed = true;
+        let fb_peakEnv = 0;
+        let fb_lastFireMs = -1e9;
+
+        function handleThudSamplesFallback(samples, sampleRate) {
+            const thrV = Number(thr.value);
+            const lfV = Number(lf.value);
+            const nfV = Number(nf.value);
+
+            const cooldownMs = Number(cd.value);
+            const minRetriggerMs = Number(rt.value);
+            const resetRatio = Number(rf.value);
+
+            const alpha = Math.exp(-2 * Math.PI * 180 / sampleRate);
+
+            let envSum = 0;
+            let lpAbs = 0;
+            let fullAbs = 0;
+
+            for (let i = 0; i < samples.length; i++) {
+                const x = samples[i];
+                const ax = Math.abs(x);
+                envSum += ax;
+
+                fb_lp = alpha * fb_lp + (1 - alpha) * x;
+                lpAbs += Math.abs(fb_lp);
+                fullAbs += ax;
+            }
+
+            const env = envSum / samples.length;
+
+            if (env > fb_peakEnv) fb_peakEnv = env;
+            else fb_peakEnv *= 0.995;
+
+            fb_base = (1 - nfV) * fb_base + nfV * env;
+
+            const spike = env - fb_base;
+            const onset = env - fb_lastEnv;
+            fb_lastEnv = env;
+
+            const ratio = fullAbs > 0 ? (lpAbs / fullAbs) : 0;
+            const ratioMin = 0.10 + lfV * 0.20;
+
+            const onsetMin = 0.010 + thrV * 0.08;
+            const early =
+                spike > (thrV * 0.65) &&
+                onset > (onsetMin * 0.65);
+
+            const nowMs = performance.now();
+
+            if (!fb_armed) {
+                const fallenEnough = env < (fb_peakEnv * resetRatio);
+                const timeOk = (nowMs - fb_lastFireMs) >= minRetriggerMs;
+                const legacyOk = (nowMs - fb_lastFireMs) >= cooldownMs;
+                if (fallenEnough && timeOk && legacyOk) fb_armed = true;
+            }
+
+            if (fb_armed && early) {
+                fb_armed = false;
+                fb_lastFireMs = nowMs;
+
+                registerThudForCombo(nowMs);
+
+                pendingThud = true;
+                confirmDeadlineMs = nowMs + CONFIRM_WINDOW_MS;
+
+                const alignMs = Number(peakAlign.value) || 0;
+                const when = audioCtx.currentTime + (alignMs / 1000);
+                playExplosion3Now({ when });
+
+                thudCount++;
+                countEl.textContent = String(thudCount);
+
+                addLog(
+                    `THUD(EARLY fallback) #${thudCount} ` +
+                    `spike=${spike.toFixed(3)} onset=${onset.toFixed(3)} ratio≈${ratio.toFixed(2)} ` +
+                    `(rt=${minRetriggerMs}ms, falloff=${Math.round(resetRatio * 100)}%, align=${alignMs}ms, offset=${Number(expOffset.value)}ms)`
+                );
+
+                if (ratio > ratioMin) {
+                    pendingThud = false;
+                    addLog(`THUD(CONFIRM fallback) ratio≈${ratio.toFixed(2)}`);
+                }
+            }
+        }
+
+        // ---- Analyser helpers (meter + optional confirm) ----
+        function computeRms(timeData) {
+            let sum = 0;
+            for (let i = 0; i < timeData.length; i++) {
+                const v = (timeData[i] - 128) / 128;
+                sum += v * v;
+            }
+            return Math.sqrt(sum / timeData.length);
+        }
+
+        function computeLowFreqRatio(freqData, sampleRate, fftSize) {
+            const nyquist = sampleRate / 2;
+            const binHz = nyquist / (freqData.length);
+            const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+
+            const loStart = 20, loEnd = 160;
+            const hiEnd = 1000;
+
+            const loA = clamp(Math.floor(loStart / binHz), 0, freqData.length - 1);
+            const loB = clamp(Math.floor(loEnd / binHz), 0, freqData.length - 1);
+            const hiB = clamp(Math.floor(hiEnd / binHz), 0, freqData.length - 1);
+
+            let low = 0, total = 0;
+            for (let i = loA; i <= hiB; i++) {
+                const mag = freqData[i] / 255;
+                const e = mag * mag;
+                total += e;
+                if (i >= loA && i <= loB) low += e;
+            }
+            return total > 0 ? (low / total) : 0;
+        }
+
+        function updateMeter(level) {
+            const pct = Math.max(0, Math.min(100, (level / 0.35) * 100));
+            barEl.style.width = pct.toFixed(1) + "%";
+            levelTextEl.textContent = `level: ${level.toFixed(3)}  (base: ${baseline.toFixed(3)})`;
+        }
+
+        function detectLoop() {
+            if (!analyser) return;
+
+            const timeData = new Uint8Array(analyser.fftSize);
+            const freqData = new Uint8Array(analyser.frequencyBinCount);
+
+            analyser.getByteTimeDomainData(timeData);
+            analyser.getByteFrequencyData(freqData);
+
+            const level = computeRms(timeData);
+
+            const adapt = Number(nf.value);
+            baseline = (1 - adapt) * baseline + adapt * level;
+
+            updateMeter(level);
+
+            // Optional confirm window:
+            // If we fired early and cannot confirm low-freq within the window, soften ONLY the last explosion voice.
+            if (pendingThud) {
+                const nowMs = performance.now();
+                if (nowMs > confirmDeadlineMs) {
+                    softenLastExplosion3Fast();
+                    pendingThud = false;
+                    addLog("THUD(NO CONFIRM) softened last explosion");
+                } else {
+                    const ratio = computeLowFreqRatio(freqData, audioCtx.sampleRate, analyser.fftSize);
+                    const ratioMin = 0.08 + (Number(lf.value) * 0.22);
+                    if (ratio > ratioMin) {
+                        pendingThud = false;
+                        // no gain ramp needed; polyphonic voices are already full volume
+                        addLog(`THUD(CONFIRM main) ratio=${ratio.toFixed(2)}`);
+                    }
+                }
+            }
+
+            rafId = requestAnimationFrame(detectLoop);
+        }
+
+        async function unlockSounds() {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state !== "running") await audioCtx.resume();
+
+                await Promise.all([loadExplosion3(), loadExplosion5()]);
+
+                // Prime output path with a silent tick
+                const tick = audioCtx.createBufferSource();
+                tick.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+                tick.connect(audioCtx.destination);
+                tick.start();
+
+                setStatus("Sounds unlocked");
+                addLog("Sounds unlocked + explosions preloaded (3 + 5).");
+            } catch (e) {
+                console.error(e);
+                addLog(`ERROR unlocking sounds: ${e?.message || e}`);
+            }
+        }
+
+        async function start() {
+            try {
+                setStatus("Requesting mic access…");
+
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state !== "running") await audioCtx.resume();
+
+                await setupThudWorkletOrFallback();
+                pushParamsToDetector();
+
+                await applyKeepAwakeSetting();
+
+                try { await Promise.all([loadExplosion3(), loadExplosion5()]); } catch (e) { addLog(`WARN: preload failed: ${e?.message || e}`); }
+
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        // For tightest transient timing, these being false can help on iOS.
+                        // If your environment gets weird feedback, flip echoCancellation back on.
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
+                    }
+                });
+
+                source = audioCtx.createMediaStreamSource(stream);
+
+                // Connect mic to detector node
+                if (thudNode) {
+                    source.connect(thudNode);
+
+                    // ScriptProcessor must be connected to run
+                    if (thudNode instanceof ScriptProcessorNode) {
+                        thudNode.connect(audioCtx.destination);
+                    }
+                }
+
+                // Keep analyser for meter + confirm (not primary triggering)
+                filterLow = audioCtx.createBiquadFilter();
+                filterLow.type = "lowpass";
+                filterLow.frequency.value = 220;
+
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 1024;
+                analyser.smoothingTimeConstant = 0.08;
+
+                source.connect(filterLow);
+                filterLow.connect(analyser);
+
+                baseline = 0.02;
+                pendingThud = false;
+                recentThudsMs = [];
+                lastComboAtMs = 0;
+
+                setStatus("Listening");
+                addLog("Listening started.");
+
+                btnStart.disabled = true;
+                btnStop.disabled = false;
+                btnReset.disabled = false;
+                btnClearLog.disabled = false;
+
+                detectLoop();
+            } catch (err) {
+                console.error(err);
+                setStatus("Mic permission denied / error");
+
+                const details = `${err?.name || "Error"}: ${err?.message || err}`;
+                addLog(`ERROR: ${details}`);
+
+                await stop();
+            }
+        }
+
+        async function stop() {
+            if (rafId) cancelAnimationFrame(rafId);
+            rafId = null;
+
+            if (analyser) { try { analyser.disconnect(); } catch { } }
+            if (filterLow) { try { filterLow.disconnect(); } catch { } }
+            if (source) { try { source.disconnect(); } catch { } }
+
+            analyser = null;
+            filterLow = null;
+            source = null;
+
+            if (thudNode) {
+                try { thudNode.disconnect(); } catch { }
+            }
+
+            if (stream) {
+                stream.getTracks().forEach(t => t.stop());
+                stream = null;
+            }
+
+            await disableKeepAwake();
+
+            if (audioCtx) {
+                try { await audioCtx.suspend(); } catch { }
+            }
+
+            btnStart.disabled = false;
+            btnStop.disabled = true;
+            btnReset.disabled = false;
+            btnClearLog.disabled = false;
+
+            setStatus("Stopped");
+            addLog("Listening stopped.");
+            updateMeter(0);
+
+            pendingThud = false;
+            recentThudsMs = [];
+        }
+
+        function resetCount() {
+            thudCount = 0;
+            countEl.textContent = "0";
+            addLog("Count reset.");
+        }
+
+        function clearLog() {
+            logEl.textContent = "";
+        }
+
+        btnUnlockSounds.addEventListener("click", unlockSounds);
+        btnStart.addEventListener("click", start);
+        btnStop.addEventListener("click", stop);
+        btnReset.addEventListener("click", resetCount);
+        btnClearLog.addEventListener("click", clearLog);
+
+        // Stop mic when tab is hidden
+        document.addEventListener("visibilitychange", () => {
+            if (document.hidden && stream) stop();
+        });
+    </script>
+</body>
+</html>
