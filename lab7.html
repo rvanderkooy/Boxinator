@@ -252,7 +252,7 @@
             if (explosionFetchPromise) return explosionFetchPromise;
 
             explosionFetchPromise = (async () => {
-                const url = "assets/explosion4.mp3";
+                const url = "assets/explosion3.mp3";
                 const res = await fetch(url, { cache: "force-cache" });
                 if (!res.ok) {
                     throw new Error(`Fetch failed (${res.status}) for ${new URL(url, location.href).href}`);
