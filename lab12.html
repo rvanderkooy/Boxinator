@@ -399,8 +399,8 @@
             if (explosion3FetchPromise) return explosion3FetchPromise;
 
             explosion3FetchPromise = (async () => {
-                //explosion3Buffer = await loadBuffer("assets/explosion3.mp3");
-                explosion3Buffer = await loadBuffer("assets/nuclear_bomb_11.mp3");
+                explosion3Buffer = await loadBuffer("assets/explosion3.mp3");
+                //explosion3Buffer = await loadBuffer("assets/nuclear_bomb_11.mp3");
                 exp3Voices = new Array(EXP3_VOICES).fill(null).map(() => ({ src: null, gain: null }));
                 return explosion3Buffer;
             })();
@@ -414,7 +414,8 @@
             if (explosion5FetchPromise) return explosion5FetchPromise;
 
             explosion5FetchPromise = (async () => {
-                explosion5Buffer = await loadBuffer("assets/explosion5.mp3");
+                //explosion5Buffer = await loadBuffer("assets/explosion5.mp3");
+                explosion5Buffer = await loadBuffer("assets/nuclear_bomb_11.mp3");
                 exp5Voices = new Array(EXP5_VOICES).fill(null).map(() => ({ src: null, gain: null }));
                 return explosion5Buffer;
             })();
